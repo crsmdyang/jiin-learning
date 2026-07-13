@@ -121,6 +121,21 @@ body { background:linear-gradient(160deg,#ffd6ec 0%,#e7d4ff 40%,#cfe4ff 80%,#ffe
 #castle-view { background:rgba(255,255,255,.6); border-radius:4vmin; padding:2vmin; text-align:center; box-shadow:0 4px 14px rgba(160,48,143,.15); }
 .castle-scene { font-size:9vmin; line-height:1.25; letter-spacing:.5vmin; min-height:24vmin; display:flex; flex-direction:column; justify-content:flex-end; }
 .castle-progress { font-size:3vmin; color:#a06cc0; margin-top:1vmin; }
+.kg-sky { display:flex; gap:2.4vmin; justify-content:center; align-items:center; font-size:5.5vmin; min-height:7vmin; }
+.kg-deco { cursor:pointer; transition:transform .15s; }
+.kg-deco:active { transform:scale(1.2); }
+.kg-deco.locked { filter:grayscale(1); opacity:.3; cursor:default; font-size:4vmin; }
+.kg-castle { font-size:15vmin; line-height:1.15; animation:bob 3.2s ease-in-out infinite; }
+.kg-castle-name { font-size:3.3vmin; color:#8b3fa8; }
+.kg-garden-title { font-size:2.7vmin; color:#a06cc0; margin-top:1.6vmin; }
+.kg-garden { display:flex; flex-wrap:wrap; gap:.8vmin 1.2vmin; justify-content:center; margin-top:.8vmin; }
+.kg-plant { width:6.5vmin; text-align:center; cursor:pointer; transition:transform .15s; }
+.kg-plant:active { transform:scale(1.25); }
+.kg-plant .pe { font-size:4.6vmin; line-height:1.1; }
+.kg-plant .pu { font-size:1.9vmin; color:#b092c5; }
+.mini-card.locked { opacity:.55; filter:grayscale(.55); }
+.mini-card.urgent { animation:urgentGlow 1.2s ease-in-out infinite; }
+@keyframes urgentGlow { 0%,100%{ box-shadow:0 5px 14px rgba(160,48,143,.18);} 50%{ box-shadow:0 0 4vmin rgba(255,110,60,.75); transform:scale(1.04);} }
 .uni-grid { flex:1; overflow-y:auto; display:grid; grid-template-columns:repeat(auto-fill,minmax(20vmin,1fr)); gap:1.8vmin; padding-bottom:2vmin; }
 .uni-card { background:rgba(255,255,255,.9); border-radius:3vmin; padding:1.6vmin; text-align:center; box-shadow:0 4px 10px rgba(160,48,143,.14); }
 .uni-card .ue { font-size:9vmin; } .uni-card.locked .ue { filter:grayscale(1); opacity:.35; }
@@ -175,8 +190,14 @@ body { background:linear-gradient(160deg,#ffd6ec 0%,#e7d4ff 40%,#cfe4ff 80%,#ffe
 .danger-btn { border:none; cursor:pointer; font-family:inherit; background:#ffe0e0; color:#c04545; border-radius:99px; padding:1.2vmin 3vmin; font-size:2.9vmin; }
 .ok-btn { border:none; cursor:pointer; font-family:inherit; background:#e3f5e8; color:#2e9159; border-radius:99px; padding:1.2vmin 3vmin; font-size:2.9vmin; }
 
-#gate, #modal, #stkModal { position:fixed; inset:0; background:rgba(90,45,130,.45); z-index:20; display:none; align-items:center; justify-content:center; }
-#gate.show, #modal.show, #stkModal.show { display:flex; }
+#gate, #modal, #stkModal, #help { position:fixed; inset:0; background:rgba(90,45,130,.45); z-index:20; display:none; align-items:center; justify-content:center; }
+#gate.show, #modal.show, #stkModal.show, #help.show { display:flex; }
+.hp-emoji { font-size:16vmin; animation:bob 2.4s ease-in-out infinite; }
+.hp-title { font-size:4.6vmin; color:#a0308f; margin-top:1vmin; }
+.hp-desc { font-size:3.1vmin; color:#7a5b90; margin-top:1.4vmin; line-height:1.6; white-space:pre-line; }
+.hp-dots { display:flex; gap:1.2vmin; justify-content:center; margin-top:2vmin; }
+.hdot { width:2vmin; height:2vmin; border-radius:50%; background:#ecd4f2; }
+.hdot.on { background:#ff8ad2; }
 .gate-box { background:#fff; border-radius:4vmin; padding:4vmin 5vmin; text-align:center; box-shadow:0 10px 40px rgba(0,0,0,.3); max-width:84vmin; }
 .gate-q { font-size:4.5vmin; color:#5a2d82; margin-bottom:2vmin; }
 .gate-in { font-size:5vmin; width:30vmin; text-align:center; border:3px solid #d9b8e8; border-radius:2vmin; padding:1vmin; font-family:inherit; }
@@ -195,27 +216,28 @@ body { background:linear-gradient(160deg,#ffd6ec 0%,#e7d4ff 40%,#cfe4ff 80%,#ffe
 
 <section id="scr-home" class="screen active">
   <div class="home-top">
-    <button class="chip" onclick="location.href='../index.html'">🏰 배움 나라</button>
+    <button class="chip" onclick="location.href='../index.html'">🏰 배움나라</button>
     <div class="chip" id="profile-chip">👧</div>
     <div style="flex:1"></div>
     <div class="stat-pill">⭐ <span id="h-stars">0</span></div>
     <div class="stat-pill">🔥 <span id="h-streak">0</span>일</div>
+    <button class="chip" onclick="openHelp()">❓</button>
     <button class="chip" onclick="openGate()">⚙️</button>
   </div>
   <div class="home-title">👑 <span id="home-title-name">단어 왕국</span> 👑</div>
   <div class="home-hero">
     <div class="home-uni" id="home-uni" onclick="uniTap()">🦄</div>
     <div class="hero-right">
-      <button class="big-btn" onclick="startSession()">모험 시작! ✨</button>
+      <button class="big-btn" id="btn-adv" onclick="startSession()">모험 시작! ✨</button>
       <div class="streak-dots" id="h-dots"></div>
       <div class="stat-pill" id="h-goal" style="font-size:2.7vmin;">오늘의 모험을 시작해 보자!</div>
     </div>
   </div>
   <div class="mini-row">
-    <button class="mini-card" onclick="startBalloon()"><div class="mi">🎈</div><div class="mt">풍선 팡팡</div><div class="ms" id="best-bal">잘 듣고 팡!</div></button>
-    <button class="mini-card" onclick="startMemory()"><div class="mi">🃏</div><div class="mt">짝 맞추기</div><div class="ms" id="best-mem">카드 뒤집기</div></button>
-    <button class="mini-card" onclick="startSpeed()"><div class="mi">⚡</div><div class="mt">스피드 퀴즈</div><div class="ms" id="best-spd">60초 도전!</div></button>
-    <button class="mini-card" onclick="startTest()"><div class="mi">🎯</div><div class="mt">깜짝 시험</div><div class="ms">실력 확인!</div></button>
+    <button class="mini-card" id="mc-bal" onclick="goMini('bal')"><div class="mi">🎈</div><div class="mt">풍선 팡팡</div><div class="ms" id="best-bal">잘 듣고 팡!</div></button>
+    <button class="mini-card" id="mc-mem" onclick="goMini('mem')"><div class="mi">🃏</div><div class="mt">짝 맞추기</div><div class="ms" id="best-mem">카드 뒤집기</div></button>
+    <button class="mini-card" id="mc-spd" onclick="goMini('spd')"><div class="mi">⚡</div><div class="mt">스피드 퀴즈</div><div class="ms" id="best-spd">60초 도전!</div></button>
+    <button class="mini-card" id="mc-test" onclick="startTest()"><div class="mi">🎯</div><div class="mt">깜짝 시험</div><div class="ms">실력 확인!</div></button>
   </div>
   <div class="quest-panel">
     <h4>🌟 오늘의 퀘스트</h4>
@@ -268,8 +290,12 @@ body { background:linear-gradient(160deg,#ffd6ec 0%,#e7d4ff 40%,#cfe4ff 80%,#ffe
     <div style="width:6vmin"></div>
   </div>
   <div id="castle-view">
-    <div class="castle-scene" id="castle-scene"></div>
+    <div class="kg-sky" id="kg-sky"></div>
+    <div class="kg-castle" id="kg-castle">⛺</div>
+    <div class="kg-castle-name" id="kg-castle-name"></div>
     <div class="castle-progress" id="castle-progress"></div>
+    <div class="kg-garden-title">🌷 단어 정원 — 유닛을 배우면 새싹이 자라요!</div>
+    <div class="kg-garden" id="kg-garden"></div>
   </div>
   <div class="uni-grid" id="uni-grid"></div>
 </section>
@@ -310,6 +336,18 @@ body { background:linear-gradient(160deg,#ffd6ec 0%,#e7d4ff 40%,#cfe4ff 80%,#ffe
     <button class="sub-btn" id="modal-no">아니요</button>
     <button class="big-btn" style="font-size:3.4vmin; padding:1.4vmin 5vmin;" id="modal-yes">네</button>
   </div>
+</div></div>
+
+<div id="help"><div class="gate-box" style="max-width:90vmin; width:80vmin;">
+  <div class="hp-emoji" id="hp-emoji">🗺️</div>
+  <div class="hp-title" id="hp-title"></div>
+  <div class="hp-desc" id="hp-desc"></div>
+  <div class="hp-dots" id="hp-dots"></div>
+  <div style="margin-top:2.5vmin; display:flex; gap:2vmin; justify-content:center;">
+    <button class="sub-btn" id="hp-prev" onclick="helpPrev()">← 이전</button>
+    <button class="big-btn" style="font-size:3.4vmin; padding:1.4vmin 5vmin;" id="hp-next" onclick="helpNext()">다음 →</button>
+  </div>
+  <button class="sub-btn" style="margin-top:1.6vmin;" onclick="closeHelp()">건너뛰기</button>
 </div></div>
 
 <div id="stkModal"><div class="gate-box">

@@ -45,16 +45,18 @@ let S = null;
 function defState(){ return {
   stars: 0, sessions: 0,
   words: {},                 // k -> {lv, ok, ng, seen}
-  days: {},                  // 'YYYY-MM-DD' -> {q, ok, stars}
+  days: {},                  // 'YYYY-MM-DD' -> {q, ok, stars, unit, udone, advDone}
   stickers: {},              // stickerId -> count
   mini: { bal:0, mem:0, spd:0 },   // best scores
+  miniSinceTest: 0,          // 마지막 깜짝시험 이후 미니게임 횟수 (3회마다 시험 필수)
   quest: null,
   cfg: { uFrom:1, uTo:30, dailyNew:6, qPer:12, introEach:true, order:'seq', reviewN:3, testQ:30, testMin:20 },
 }; }
 function load(){ try { S = JSON.parse(localStorage.getItem(SKEY)) || defState(); } catch(e){ S = defState(); }
   const d = defState();
   S.cfg = Object.assign(d.cfg, S.cfg || {});
-  S.stickers = S.stickers || {}; S.mini = Object.assign(d.mini, S.mini || {}); }
+  S.stickers = S.stickers || {}; S.mini = Object.assign(d.mini, S.mini || {});
+  S.miniSinceTest = Math.max(0, parseInt(S.miniSinceTest, 10) || 0); }
 let _syncShown = null;
 function save(){
   S._ts = Date.now();
@@ -76,6 +78,29 @@ function streak(){
     if (S.days[key] && S.days[key].q > 0){ n++; d.setDate(d.getDate()-1); } else break; }
   return n;
 }
+
+/* ---------- 오늘의 유닛 (하루 모험 = 유닛 1개 전체) ---------- */
+function unitWords(u){ return ALL.filter(w => w.u === u); }
+function todayUnit(){
+  const d = dayRec();
+  if (d.unit && d.unit >= S.cfg.uFrom && d.unit <= S.cfg.uTo) return d.unit;
+  let u0 = null;
+  for (let u = S.cfg.uFrom; u <= S.cfg.uTo; u++){
+    if (unitWords(u).some(w => wRec(w.k).seen === 0)){ u0 = u; break; }
+  }
+  if (u0 === null){ // 모든 유닛을 본 경우: 가장 약한 유닛으로 복습
+    let best = S.cfg.uFrom, bestSum = Infinity;
+    for (let u = S.cfg.uFrom; u <= S.cfg.uTo; u++){
+      const s = unitWords(u).reduce((a,w) => a + wRec(w.k).lv, 0);
+      if (s < bestSum){ bestSum = s; best = u; }
+    }
+    u0 = best;
+  }
+  d.unit = u0;
+  return u0;
+}
+function advDoneToday(){ return !!dayRec().advDone; }
+function testOwed(){ return (S.miniSinceTest || 0) >= 3; }
 
 /* ---------- audio ---------- */
 let AC = null;
@@ -167,11 +192,41 @@ const FRIENDS = [
   {e:'🐿️', n:'도토리', c:3750}, {e:'🦉', n:'지혜부엉이', c:4400},{e:'👸', n:'공주님', c:5100},
 ];
 FRIENDS[11].n = PROFILE.name + ' 공주';
-const CASTLE_STAGES = [
-  '🌱', '🌷🌱🌷', '⛺\n🌷🌱🌷', '🏠\n🌷🌸🌷', '🏠🏠\n🌷🌸🌷',
-  '🏰\n🌷🌸🌷', '🏰🏠\n🌷🌸🌷🌸', '👑\n🏰🏠\n🌷🌸🌷🌸', '🌈\n👑\n🏰🏰\n🌷🌸🌷🌸', '🌈✨🌈\n👑\n🏰🏰🏰\n🌷🌸🌷🌸🌷'
+/* 왕궁 건설 단계 — 모험을 3번 완료할 때마다 한 단계씩 자란다 */
+const CASTLE_LEVELS = [
+  {e:'🌱',            n:'왕국의 씨앗'},
+  {e:'⛺',            n:'모험가의 천막'},
+  {e:'🛖',            n:'아늑한 오두막'},
+  {e:'🏠',            n:'예쁜 벽돌집'},
+  {e:'🏡',            n:'정원 딸린 집'},
+  {e:'🏰',            n:'작은 성'},
+  {e:'✨🏰✨',         n:'반짝이는 성'},
+  {e:'👑🏰👑',         n:'공주의 왕궁'},
+  {e:'🌈👑🏰👑🌈',     n:'무지개 대왕궁'},
 ];
-function castleStage(){ return Math.min(CASTLE_STAGES.length-1, Math.floor(S.sessions / 3)); }
+function castleStage(){ return Math.min(CASTLE_LEVELS.length-1, Math.floor(S.sessions / 3)); }
+/* 왕국 꾸미기 — 별을 모으면 하나씩 나타난다 */
+const KG_DECOS = [
+  {c:300,  e:'🎈', n:'축하 풍선'},
+  {c:800,  e:'⛲', n:'소원의 분수'},
+  {c:1500, e:'🎠', n:'회전목마'},
+  {c:2500, e:'🌈', n:'행운의 무지개'},
+  {c:4000, e:'🎡', n:'별빛 관람차'},
+  {c:6000, e:'🎆', n:'축제 불꽃'},
+];
+/* 단어 정원 — 유닛 진도에 따라 새싹이 자란다 */
+function plantFor(u){
+  const uw = unitWords(u);
+  const sum = uw.reduce((s,w) => s + Math.min(5, wRec(w.k).lv), 0);
+  const pct = uw.length ? sum / (uw.length * 5) : 0;
+  const seen = uw.some(w => wRec(w.k).seen > 0);
+  if (!seen && pct === 0) return {e:'🌰', s:'씨앗'};
+  if (pct < .2)  return {e:'🌱', s:'새싹'};
+  if (pct < .45) return {e:'🌿', s:'풀잎'};
+  if (pct < .7)  return {e:'🌷', s:'꽃봉오리'};
+  if (pct < .95) return {e:'🌸', s:'활짝 핀 꽃'};
+  return {e:'🌳', s:'커다란 나무'};
+}
 
 /* ---------- home ---------- */
 function renderHome(){
@@ -179,9 +234,17 @@ function renderHome(){
   document.getElementById('h-streak').textContent = streak();
   document.getElementById('home-title-name').textContent = PROFILE.name + '의 단어 왕국';
   document.getElementById('profile-chip').textContent = PROFILE.avatar + ' ' + PROFILE.name;
-  const d = dayRec(), goal = S.cfg.qPer;
-  document.getElementById('h-goal').textContent =
-    d.q >= goal ? `오늘 목표 완성! 🎉 (${d.q}문제)` : `오늘 ${d.q} / ${goal} 문제 — 조금만 더! 💪`;
+  const d = dayRec();
+  const u = todayUnit(), uw = unitWords(u);
+  const doneN = Object.keys(d.udone || {}).length;
+  const advBtn = document.getElementById('btn-adv');
+  if (d.advDone){
+    document.getElementById('h-goal').textContent = `오늘의 모험 완성! 🎉 (Unit ${d.unit})`;
+    advBtn.textContent = '복습 모험 🎀';
+  } else {
+    document.getElementById('h-goal').textContent = `오늘의 모험: Unit ${u} — ${doneN} / ${uw.length} 단어 💪`;
+    advBtn.textContent = doneN > 0 ? `Unit ${u} 이어서 하기! ✨` : `Unit ${u} 모험 시작! ✨`;
+  }
   const dots = document.getElementById('h-dots'); dots.innerHTML = '';
   for (let i = 6; i >= 0; i--){
     const dt = new Date(); dt.setDate(dt.getDate()-i);
@@ -190,13 +253,21 @@ function renderHome(){
     el.textContent = (S.days[key] && S.days[key].q>0) ? '⭐' : '';
     dots.appendChild(el);
   }
-  // 미니게임 최고기록
-  document.getElementById('best-bal').textContent = S.mini.bal ? `최고 ${S.mini.bal}점` : '잘 듣고 팡!';
-  document.getElementById('best-mem').textContent = S.mini.mem ? `최고 ${S.mini.mem}점` : '카드 뒤집기';
-  document.getElementById('best-spd').textContent = S.mini.spd ? `최고 ${S.mini.spd}개` : '60초 도전!';
+  // 미니게임 카드 잠금 상태
+  const locked = !advDoneToday(), owed = testOwed();
+  [['mc-bal','bal','잘 듣고 팡!','점'],['mc-mem','mem','카드 뒤집기','점'],['mc-spd','spd','60초 도전!','개']].forEach(([id, kind, def, unit]) => {
+    const card = document.getElementById(id), ms = card.querySelector('.ms');
+    card.classList.toggle('locked', locked || owed);
+    ms.textContent = locked ? '🔒 모험 먼저!' : owed ? '🎯 깜짝 시험 먼저!'
+      : (S.mini[kind] ? `최고 ${S.mini[kind]}${unit}` : def);
+  });
+  const tc = document.getElementById('mc-test');
+  tc.classList.toggle('urgent', !locked && owed);
+  tc.querySelector('.ms').textContent = owed ? '지금 도전해야 해!' : '실력 확인!';
   const stkN = Object.keys(S.stickers).length;
   document.getElementById('stk-count').textContent = stkN ? `(${stkN}/${STICKERS.length})` : '';
   renderQuests();
+  save();
 }
 
 /* ---------- 일일 퀘스트 ---------- */
@@ -281,11 +352,23 @@ function modeFor(w){
 }
 async function startSession(){
   ac(); // unlock audio on user gesture
-  const words = pickSession();
+  const d = dayRec();
+  let words, isDaily = false, dailyU = 0;
+  if (!d.advDone){
+    // 오늘의 모험: 오늘의 유닛 전체 (아직 못 맞힌 단어들, 유닛 순서대로)
+    dailyU = todayUnit();
+    d.udone = d.udone || {};
+    words = unitWords(dailyU).filter(w => !d.udone[w.k]);
+    isDaily = true;
+    if (!words.length){ d.advDone = true; save(); renderHome(); return; }
+  } else {
+    words = pickSession(); // 복습 모험
+  }
   if (!words.length){ alert('단어가 없어요! 부모님 설정에서 유닛 범위를 확인해 주세요.'); return; }
   Q = { queue: words.map(w => ({k: w.k})), idx: 0, correct: 0, stars0: S.stars,
         newSet: new Set(words.filter(w => wRec(w.k).seen === 0).map(w => w.k)),
-        introDone: new Set(), comboN: 0, total: words.length, isTest: false };
+        introDone: new Set(), comboN: 0, total: words.length, isTest: false,
+        isDaily, unit: dailyU };
   showScreen('scr-game');
   document.getElementById('r-again').onclick = startSession;
   document.getElementById('g-timer').classList.add('hidden');
@@ -429,8 +512,12 @@ function pick(btn, isRight, k){
     onWrong(k);
   }
 }
+function markDaily(k){
+  if (Q && Q.isDaily){ const d = dayRec(); d.udone = d.udone || {}; d.udone[k] = 1; }
+}
 function onCorrect(el, k){
   const r = wRec(k); r.seen++; r.ok++; r.lv = Math.min(5, r.lv + 1);
+  markDaily(k);
   Q.comboN++; Q.correct++;
   let gain = 10;
   if (Q.comboN >= 3){ gain += 5; comboShow(); }
@@ -525,6 +612,7 @@ function renderSpell(w){
 }
 function onCorrectSpell(k, wrongTries, rect){
   const r = wRec(k); r.seen++;
+  markDaily(k);
   const clean = wrongTries <= 1;
   if (clean){ r.ok++; r.lv = Math.min(5, r.lv + 1); } // gentle
   if (Q.isTest && !clean){
@@ -550,6 +638,14 @@ function endSession(quit){
   clearInterval(testTick);
   document.getElementById('g-timer').classList.add('hidden');
   if (!quit && !Q.isTest){ S.sessions++; questRec().adv++; }
+  if (!quit && Q.isTest) S.miniSinceTest = 0;  // 깜짝시험 완료 → 미니게임 다시 열림
+  let dailyClear = false;
+  if (Q.isDaily){
+    const d = dayRec();
+    if (Object.keys(d.udone || {}).length >= unitWords(Q.unit).length && !d.advDone){
+      d.advDone = true; dailyClear = true;
+    }
+  }
   if (!quit) sfxFanfare();
   checkQuests();
   const earned = S.stars - Q.stars0;
@@ -565,9 +661,13 @@ function endSession(quit){
   } else {
     document.getElementById('r-words').textContent = Q.newSet.size;
     document.getElementById('r-words-lab').textContent = '배운 단어';
-    const titles = ['완벽해, 지인 공주님! 👑', '오늘도 최고야! 💖', '유니콘이 감동했어! 🦄', '반짝반짝 빛나는 실력! ✨'];
-    document.getElementById('res-title').textContent =
-      Q.correct >= Q.total ? titles[0] : titles[1 + Math.floor(Math.random()*3)];
+    if (dailyClear){
+      document.getElementById('res-title').textContent = `🎉 Unit ${Q.unit} 완성! 미니게임이 열렸어! 🎈`;
+    } else {
+      const titles = ['완벽해, ' + PROFILE.name + ' 공주님! 👑', '오늘도 최고야! 💖', '유니콘이 감동했어! 🦄', '반짝반짝 빛나는 실력! ✨'];
+      document.getElementById('res-title').textContent =
+        Q.correct >= Q.total ? titles[0] : titles[1 + Math.floor(Math.random()*3)];
+    }
   }
   // friend unlock check
   const before = FRIENDS.filter(f => f.c <= Q.stars0).length;
@@ -590,15 +690,39 @@ function endSession(quit){
   }
 }
 
-/* ---------- collection ---------- */
+/* ---------- collection (나의 왕국) ---------- */
 function renderCollection(){
   document.getElementById('col-title').textContent = '🏰 ' + PROFILE.name + '의 왕국';
-  const st = castleStage();
-  document.getElementById('castle-scene').textContent = '';
-  document.getElementById('castle-scene').innerHTML = CASTLE_STAGES[st].split('\n').map(l=>`<div>${l}</div>`).join('');
-  const nextIn = st >= CASTLE_STAGES.length-1 ? null : (st+1)*3 - S.sessions;
+  // ① 하늘 장식 (별로 잠금 해제)
+  const sky = document.getElementById('kg-sky'); sky.innerHTML = '';
+  KG_DECOS.forEach(dc => {
+    const got = S.stars >= dc.c;
+    const el = document.createElement('div');
+    el.className = 'kg-deco' + (got ? '' : ' locked');
+    el.title = got ? dc.n : `⭐${dc.c}`;
+    el.textContent = got ? dc.e : '❔';
+    if (got) el.onclick = () => { sfxPop(); const r = el.getBoundingClientRect(); burst(r.left+r.width/2, r.top+r.height/2, false); };
+    sky.appendChild(el);
+  });
+  // ② 왕궁
+  const st = castleStage(), cl = CASTLE_LEVELS[st];
+  document.getElementById('kg-castle').textContent = cl.e;
+  document.getElementById('kg-castle-name').textContent = `${cl.n} (${st+1}단계 / ${CASTLE_LEVELS.length}단계)`;
+  const nextIn = st >= CASTLE_LEVELS.length-1 ? null : (st+1)*3 - S.sessions;
   document.getElementById('castle-progress').textContent =
-    nextIn === null ? '왕국이 완성됐어요! 🌈👑' : `모험 ${nextIn}번 더 하면 왕국이 자라나요! (지금 ${S.sessions}번 완료)`;
+    nextIn === null ? '왕궁이 완성됐어요! 🌈👑' : `모험 ${nextIn}번 더 하면 왕궁이 자라나요! (지금까지 ${S.sessions}번 완료)`;
+  // ③ 단어 정원 (유닛마다 새싹이 자란다)
+  const garden = document.getElementById('kg-garden'); garden.innerHTML = '';
+  for (let u = S.cfg.uFrom; u <= S.cfg.uTo; u++){
+    const p = plantFor(u);
+    const el = document.createElement('div');
+    el.className = 'kg-plant';
+    el.title = `Unit ${u} — ${p.s}`;
+    el.innerHTML = `<div class="pe">${p.e}</div><div class="pu">U${u}</div>`;
+    el.onclick = () => { sfxPop(); const r = el.getBoundingClientRect(); burst(r.left+r.width/2, r.top+r.height/2, false); };
+    garden.appendChild(el);
+  }
+  // ④ 유니콘 친구들
   const grid = document.getElementById('uni-grid'); grid.innerHTML = '';
   FRIENDS.forEach(f => {
     const got = S.stars >= f.c;
@@ -611,12 +735,16 @@ function renderCollection(){
   });
 }
 
-/* ---------- parent gate ---------- */
-let gateAns = 0;
+/* ---------- parent gate (보안 강화: 두 자리 × 한 자리 곱셈 + 연속 오답 잠금) ---------- */
+let gateAns = 0, gateFails = 0, gateLockUntil = 0;
 function openGate(){
-  const a = 12 + Math.floor(Math.random()*77), b = 13 + Math.floor(Math.random()*76);
-  gateAns = a + b;
-  document.getElementById('gate-q').textContent = `${a} + ${b} = ?`;
+  if (Date.now() < gateLockUntil){
+    askInfo('설정 화면이 잠깐 잠겼어요.\n조금 뒤에 다시 시도해 주세요 🔒');
+    return;
+  }
+  const a = 12 + Math.floor(Math.random()*78), b = 3 + Math.floor(Math.random()*7);
+  gateAns = a * b;
+  document.getElementById('gate-q').textContent = `${a} × ${b} = ?`;
   document.getElementById('gate-in').value = '';
   document.getElementById('gate').classList.add('show');
   setTimeout(() => document.getElementById('gate-in').focus(), 100);
@@ -624,17 +752,53 @@ function openGate(){
 function closeGate(){ document.getElementById('gate').classList.remove('show'); }
 function checkGate(){
   if (parseInt(document.getElementById('gate-in').value, 10) === gateAns){
+    gateFails = 0;
     closeGate(); renderParent(); showScreen('scr-parent');
-  } else { closeGate(); }
+  } else {
+    gateFails++;
+    if (gateFails >= 3){ gateFails = 0; gateLockUntil = Date.now() + 60000; } // 3회 오답 → 1분 잠금
+    closeGate();
+  }
 }
 
 /* ---------- modal ---------- */
 function askModal(msg, onYes){
   const m = document.getElementById('modal');
   document.getElementById('modal-msg').textContent = msg;
+  document.getElementById('modal-no').style.display = '';
+  document.getElementById('modal-yes').textContent = '네';
   m.classList.add('show');
   document.getElementById('modal-yes').onclick = () => { m.classList.remove('show'); onYes(); };
   document.getElementById('modal-no').onclick = () => m.classList.remove('show');
+}
+function askInfo(msg){
+  const m = document.getElementById('modal');
+  document.getElementById('modal-msg').textContent = msg;
+  document.getElementById('modal-no').style.display = 'none';
+  document.getElementById('modal-yes').textContent = '알겠어! ✨';
+  m.classList.add('show');
+  document.getElementById('modal-yes').onclick = () => m.classList.remove('show');
+}
+
+/* ---------- 미니게임 잠금 규칙 ----------
+   ① 오늘의 모험(유닛 1개)을 끝내야 미니게임이 열린다
+   ② 미니게임을 3번 하면 깜짝 시험을 1번 봐야 다시 열린다 */
+function miniGateOK(){
+  if (!advDoneToday()){
+    askInfo('오늘의 모험을 먼저 끝내야\n미니게임을 할 수 있어! 🗺️✨');
+    return false;
+  }
+  if (testOwed()){
+    askModal('미니게임을 3번 했구나!\n🎯 깜짝 시험을 봐야 미니게임이 다시 열려.\n지금 도전해 볼까?', startTest);
+    return false;
+  }
+  return true;
+}
+function goMini(kind){
+  if (!miniGateOK()) return;
+  if (kind === 'bal') startBalloon();
+  else if (kind === 'mem') startMemory();
+  else startSpeed();
 }
 
 /* ---------- parent screen ---------- */
@@ -661,16 +825,16 @@ function renderParent(){
   document.getElementById('p-body').innerHTML = `
     <div class="p-sec"><h3>📚 학습 범위와 분량</h3>
       <div class="p-row">유닛 ${selN('cfg-uf',1,30,c.uFrom)} 부터 ${selN('cfg-ut',1,30,c.uTo)} 까지</div>
-      <div class="p-row">새 단어 출제 순서
-        <select id="cfg-order">
-          <option value="seq" ${c.order==='seq'?'selected':''}>유닛 순서대로</option>
-          <option value="random" ${c.order==='random'?'selected':''}>랜덤</option>
-        </select></div>
-      <div class="p-row">하루 새 단어 ${selN('cfg-new',2,20,c.dailyNew)} 개</div>
-      <div class="p-row">한 모험(세션) 문제 수 ${selN('cfg-q',6,30,c.qPer)} 개</div>
-      <div class="p-row">세션당 복습 문제 수 ${selN('cfg-rev',0,10,c.reviewN)} 개 <span style="font-size:2.4vmin;color:#a58bb8;">(이전에 배운 단어 다시 내기)</span></div>
+      <div class="p-row" style="font-size:2.6vmin;color:#a58bb8;">🗺️ 하루 모험 분량은 <b>유닛 1개 전체(25단어)</b>예요. 오늘의 유닛을 다 끝내야 미니게임이 열립니다.
+        지금 오늘의 유닛: <b>Unit ${todayUnit()}</b>${advDoneToday() ? ' (완료 🎉)' : ''}</div>
+      <div class="p-row">복습 모험 문제 수 ${selN('cfg-q',6,30,c.qPer)} 개 <span style="font-size:2.4vmin;color:#a58bb8;">(오늘의 유닛을 끝낸 뒤 추가 모험)</span></div>
+      <div class="p-row">복습 모험 속 복습 단어 ${selN('cfg-rev',0,10,c.reviewN)} 개</div>
       <div class="p-row"><label><input type="checkbox" id="cfg-intro" ${c.introEach?'checked':''}> 새 단어는 먼저 카드로 보여주기</label></div>
       <div class="p-row"><button class="ok-btn" onclick="saveCfg()">설정 저장 ✓</button></div>
+    </div>
+    <div class="p-sec"><h3>🎪 미니게임 규칙</h3>
+      <div class="p-row" style="font-size:2.6vmin;color:#a58bb8;">미니게임을 3번 하면 🎯 깜짝 시험을 1번 봐야 다시 열려요.
+        (지금까지 시험 없이 한 미니게임: <b>${S.miniSinceTest || 0} / 3</b>)</div>
     </div>
     <div class="p-sec"><h3>🎯 깜짝 시험 (타임어택)</h3>
       <div class="p-row">문제 수 ${selN('cfg-tq',10,50,c.testQ,5)} 개 · 제한 시간 ${selN('cfg-tm',5,40,c.testMin,5)} 분</div>
@@ -701,8 +865,7 @@ function saveCfg(){
   let uf = +g('cfg-uf').value, ut = +g('cfg-ut').value;
   if (uf > ut) [uf, ut] = [ut, uf];
   S.cfg.uFrom = uf; S.cfg.uTo = ut;
-  S.cfg.dailyNew = +g('cfg-new').value; S.cfg.qPer = +g('cfg-q').value;
-  S.cfg.order = g('cfg-order').value;
+  S.cfg.qPer = +g('cfg-q').value;
   S.cfg.reviewN = +g('cfg-rev').value;
   S.cfg.testQ = +g('cfg-tq').value; S.cfg.testMin = +g('cfg-tm').value;
   S.cfg.introEach = g('cfg-intro').checked;
@@ -796,6 +959,7 @@ function quitMini(){ clearInterval(mgTimer); clearTimeout(MG && MG.to); save(); 
 function endMini(kind, score, label){
   clearInterval(mgTimer); clearTimeout(MG && MG.to);
   questRec().mini++;
+  S.miniSinceTest = (S.miniSinceTest || 0) + 1;
   if (score > (S.mini[kind] || 0)) S.mini[kind] = score;
   checkQuests();
   const earned = S.stars - MG.stars0;
@@ -806,7 +970,8 @@ function endMini(kind, score, label){
   document.getElementById('res-title').textContent = label;
   document.getElementById('res-uni').textContent = ['🦄','🎉🦄','🌈🦄'][Math.floor(Math.random()*3)];
   document.getElementById('r-unlock').classList.add('hidden');
-  document.getElementById('r-again').onclick = MG.restart;
+  const rst = MG.restart;
+  document.getElementById('r-again').onclick = () => { if (miniGateOK()) rst(); };
   save();
   showScreen('scr-result');
   sfxFanfare();
@@ -963,11 +1128,39 @@ function speedQ(){
 }
 
 /* ================================================================
+   도움말 (처음 오면 자동으로 보여줘요)
+   ================================================================ */
+const HELP_PAGES = [
+  {e:'🗺️', t:'모험을 떠나요!', d:'하루에 한 유닛(25단어)씩 모험을 해요.\n그림 고르기, 듣기, 스펠링 맞히기까지!\n"모험 시작" 버튼을 눌러 봐요.'},
+  {e:'🎈', t:'미니게임이 기다려요', d:'오늘의 모험을 다 끝내면\n풍선 팡팡 · 짝 맞추기 · 스피드 퀴즈가 열려요!\n먼저 공부, 그다음 놀이! 😊'},
+  {e:'🎯', t:'깜짝 시험', d:'미니게임을 3번 하고 나면\n깜짝 시험에 도전해야 미니게임이 다시 열려요.\n배운 단어에서만 나오니까 걱정 마요!'},
+  {e:'⭐', t:'별을 모아요', d:'정답을 맞히면 별 +10, 연속으로 맞히면 콤보 보너스!\n틀리면 별이 5개 도망가요.\n별을 모으면 유니콘 친구들이 찾아와요 🦄'},
+  {e:'🏰', t:'나의 왕국', d:'모험을 할수록 왕궁이 점점 커지고\n유닛을 배울 때마다 정원에 새싹이 자라요!\n스티커북도 꼭 구경해 봐요 📔'},
+];
+let helpIdx = 0;
+function openHelp(){ helpIdx = 0; renderHelp(); document.getElementById('help').classList.add('show'); }
+function renderHelp(){
+  const p = HELP_PAGES[helpIdx];
+  document.getElementById('hp-emoji').textContent = p.e;
+  document.getElementById('hp-title').textContent = p.t;
+  document.getElementById('hp-desc').textContent = p.d;
+  document.getElementById('hp-dots').innerHTML = HELP_PAGES.map((_,i) =>
+    `<span class="hdot${i===helpIdx?' on':''}"></span>`).join('');
+  document.getElementById('hp-prev').style.visibility = helpIdx === 0 ? 'hidden' : 'visible';
+  document.getElementById('hp-next').textContent = helpIdx === HELP_PAGES.length-1 ? '시작하기! 🚀' : '다음 →';
+}
+function helpNext(){ sfxPop(); if (helpIdx < HELP_PAGES.length-1){ helpIdx++; renderHelp(); } else closeHelp(); }
+function helpPrev(){ sfxPop(); if (helpIdx > 0){ helpIdx--; renderHelp(); } }
+function closeHelp(){ document.getElementById('help').classList.remove('show');
+  if (!S.helpSeen){ S.helpSeen = 1; save(); } }
+
+/* ================================================================
    boot — 클라우드 동기화 후 시작
    ================================================================ */
 load();
 renderHome();
 document.getElementById('gate-in').addEventListener('keydown', e => { if (e.key === 'Enter') checkGate(); });
+if (!S.helpSeen) setTimeout(openHelp, 700);
 
 (function cloudBoot(){
   if (!(window.Cloud && Cloud.enabled) || PROFILE.guest || !PROFILE.uid) return;
@@ -992,5 +1185,5 @@ document.getElementById('gate-in').addEventListener('keydown', e => { if (e.key 
   });
 })();
 
-// 첫 화면에서 현재 진도 유닛 오디오 미리 로딩 (백그라운드)
-setTimeout(() => { try { ensureAudioFor(pickSession()); } catch(e){} }, 1200);
+// 첫 화면에서 오늘의 유닛 오디오 미리 로딩 (백그라운드)
+setTimeout(() => { try { ensureAudioUnit(todayUnit()); } catch(e){} }, 1200);
