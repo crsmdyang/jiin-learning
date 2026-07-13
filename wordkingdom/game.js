@@ -32,7 +32,7 @@ const ALL = []; // {k, u, i, w, pos, kor, eng, ex, e}
     const arr = WORDS[String(u)] || [];
     arr.forEach((w, i) => {
       ALL.push({ k: `u${String(u).padStart(2,'0')}_${String(i).padStart(2,'0')}`,
-                 u, i, w: w.w, pos: w.pos, kor: cleanKor(w.kor), eng: w.eng, ex: w.ex, e: w.e || null });
+                 u, i, w: w.w, pos: w.pos, kor: cleanKor(w.kor), def: w.def || '', ex: w.ex, e: w.e || null });
     });
   }
 })();
@@ -45,25 +45,34 @@ let S = null;
 function defState(){ return {
   stars: 0, sessions: 0,
   words: {},                 // k -> {lv, ok, ng, seen}
-  days: {},                  // 'YYYY-MM-DD' -> {q, ok, stars}
+  days: {},                  // 'YYYY-MM-DD' -> {q, ok, stars, unit, udone, advDone}
   stickers: {},              // stickerId -> count
   mini: { bal:0, mem:0, spd:0 },   // best scores
+  miniSinceTest: 0,          // 마지막 깜짝시험 이후 미니게임 횟수 (3회마다 시험 필수)
   quest: null,
-  cfg: { uFrom:1, uTo:30, dailyNew:6, qPer:12, introEach:true, order:'seq', reviewN:3, testQ:30, testMin:20 },
+  cfg: { uFrom:1, uTo:30, dailyNew:6, qPer:12, introEach:true, order:'seq', reviewN:3, testQ:30, testMin:20, unitPick:0 },
 }; }
 function load(){ try { S = JSON.parse(localStorage.getItem(SKEY)) || defState(); } catch(e){ S = defState(); }
   const d = defState();
   S.cfg = Object.assign(d.cfg, S.cfg || {});
-  S.stickers = S.stickers || {}; S.mini = Object.assign(d.mini, S.mini || {}); }
-let _syncShown = null;
+  S.stickers = S.stickers || {}; S.mini = Object.assign(d.mini, S.mini || {});
+  S.miniSinceTest = Math.max(0, parseInt(S.miniSinceTest, 10) || 0); }
+let _syncShown = null, _pendingSave = false, _cloudReady = false;
+function hasProgress(st){
+  return !!(st && (Object.keys(st.words || {}).length || st.sessions || st.stars || Object.keys(st.stickers || {}).length));
+}
 function save(){
   S._ts = Date.now();
   try { localStorage.setItem(SKEY, JSON.stringify(S)); } catch(e){}
-  if (window.Cloud && Cloud.enabled && !PROFILE.guest && Cloud.user){
-    Cloud.saveProgress(PROFILE.pid, 'wordKingdom', S);
-    const dot = document.getElementById('sync-dot');
-    dot.classList.remove('hidden');
-    clearTimeout(_syncShown); _syncShown = setTimeout(() => dot.classList.add('hidden'), 1500);
+  if (window.Cloud && Cloud.enabled && !PROFILE.guest){
+    if (Cloud.user && _cloudReady){
+      Cloud.saveProgress(PROFILE.pid, 'wordKingdom', S);
+      const dot = document.getElementById('sync-dot');
+      dot.classList.remove('hidden');
+      clearTimeout(_syncShown); _syncShown = setTimeout(() => dot.classList.add('hidden'), 1500);
+    } else {
+      _pendingSave = true; // 로그인/클라우드 확인 전 저장은 확인 후 올린다
+    }
   }
 }
 function today(){ const d = new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
@@ -76,6 +85,36 @@ function streak(){
     if (S.days[key] && S.days[key].q > 0){ n++; d.setDate(d.getDate()-1); } else break; }
   return n;
 }
+
+/* ---------- 오늘의 유닛 (하루 모험 = 유닛 1개 전체) ---------- */
+function unitWords(u){ return ALL.filter(w => w.u === u); }
+function todayUnit(){
+  const d = dayRec();
+  const pick = Math.max(0, parseInt(S.cfg.unitPick, 10) || 0);
+  if (pick >= 1 && pick <= 30){
+    // 관리자가 유닛을 직접 선택: 그 유닛에 계속 머무르고, 자동 진행은 멈춘다
+    if (d.unit !== pick){ d.unit = pick; d.forced = 1; d.udone = {}; d.advDone = false; }
+    return pick;
+  }
+  if (d.forced){ delete d.forced; d.unit = 0; d.udone = {}; d.advDone = false; } // 자동으로 복귀 → 다시 계산
+  if (d.unit && d.unit >= S.cfg.uFrom && d.unit <= S.cfg.uTo) return d.unit;
+  // 자동 진행: 하루에 한 유닛씩, 완료해야만 다음 날 다음 유닛으로
+  if (!S.prog || !S.prog.unit){
+    // 기존 사용자 마이그레이션: 아직 안 본 단어가 있는 첫 유닛에서 시작
+    let u0 = null;
+    for (let u = S.cfg.uFrom; u <= S.cfg.uTo; u++){
+      if (unitWords(u).some(w => wRec(w.k).seen === 0)){ u0 = u; break; }
+    }
+    S.prog = { unit: (u0 === null ? S.cfg.uTo : u0), doneDate: null };
+  }
+  let u = S.prog.unit;
+  if (S.prog.doneDate && S.prog.doneDate < today()) u = u + 1; // 이전 날에 완료했으면 다음 유닛 (하루 1유닛)
+  u = Math.min(Math.max(u, S.cfg.uFrom), S.cfg.uTo);
+  d.unit = u;
+  return u;
+}
+function advDoneToday(){ return !!dayRec().advDone; }
+function testOwed(){ return (S.miniSinceTest || 0) >= 3; }
 
 /* ---------- audio ---------- */
 let AC = null;
@@ -94,6 +133,12 @@ function playWord(k){
     const u = new SpeechSynthesisUtterance(w.w); u.lang = 'en-US'; u.rate = .85;
     speechSynthesis.cancel(); speechSynthesis.speak(u);
   }
+}
+function speakEn(txt){
+  if (!txt || !window.speechSynthesis) return;
+  try { if (curAudio) curAudio.pause(); } catch(e){}
+  const u = new SpeechSynthesisUtterance(txt); u.lang = 'en-US'; u.rate = .8;
+  speechSynthesis.cancel(); speechSynthesis.speak(u);
 }
 function tone(freq, t0, dur, type, vol){
   const c = ac(), o = c.createOscillator(), g = c.createGain();
@@ -167,11 +212,41 @@ const FRIENDS = [
   {e:'🐿️', n:'도토리', c:3750}, {e:'🦉', n:'지혜부엉이', c:4400},{e:'👸', n:'공주님', c:5100},
 ];
 FRIENDS[11].n = PROFILE.name + ' 공주';
-const CASTLE_STAGES = [
-  '🌱', '🌷🌱🌷', '⛺\n🌷🌱🌷', '🏠\n🌷🌸🌷', '🏠🏠\n🌷🌸🌷',
-  '🏰\n🌷🌸🌷', '🏰🏠\n🌷🌸🌷🌸', '👑\n🏰🏠\n🌷🌸🌷🌸', '🌈\n👑\n🏰🏰\n🌷🌸🌷🌸', '🌈✨🌈\n👑\n🏰🏰🏰\n🌷🌸🌷🌸🌷'
+/* 왕궁 건설 단계 — 모험을 3번 완료할 때마다 한 단계씩 자란다 */
+const CASTLE_LEVELS = [
+  {e:'🌱',            n:'왕국의 씨앗'},
+  {e:'⛺',            n:'모험가의 천막'},
+  {e:'🛖',            n:'아늑한 오두막'},
+  {e:'🏠',            n:'예쁜 벽돌집'},
+  {e:'🏡',            n:'정원 딸린 집'},
+  {e:'🏰',            n:'작은 성'},
+  {e:'✨🏰✨',         n:'반짝이는 성'},
+  {e:'👑🏰👑',         n:'공주의 왕궁'},
+  {e:'🌈👑🏰👑🌈',     n:'무지개 대왕궁'},
 ];
-function castleStage(){ return Math.min(CASTLE_STAGES.length-1, Math.floor(S.sessions / 3)); }
+function castleStage(){ return Math.min(CASTLE_LEVELS.length-1, Math.floor(S.sessions / 3)); }
+/* 왕국 꾸미기 — 별을 모으면 하나씩 나타난다 */
+const KG_DECOS = [
+  {c:300,  e:'🎈', n:'축하 풍선'},
+  {c:800,  e:'⛲', n:'소원의 분수'},
+  {c:1500, e:'🎠', n:'회전목마'},
+  {c:2500, e:'🌈', n:'행운의 무지개'},
+  {c:4000, e:'🎡', n:'별빛 관람차'},
+  {c:6000, e:'🎆', n:'축제 불꽃'},
+];
+/* 단어 정원 — 유닛 진도에 따라 새싹이 자란다 */
+function plantFor(u){
+  const uw = unitWords(u);
+  const sum = uw.reduce((s,w) => s + Math.min(5, wRec(w.k).lv), 0);
+  const pct = uw.length ? sum / (uw.length * 5) : 0;
+  const seen = uw.some(w => wRec(w.k).seen > 0);
+  if (!seen && pct === 0) return {e:'🌰', s:'씨앗'};
+  if (pct < .2)  return {e:'🌱', s:'새싹'};
+  if (pct < .45) return {e:'🌿', s:'풀잎'};
+  if (pct < .7)  return {e:'🌷', s:'꽃봉오리'};
+  if (pct < .95) return {e:'🌸', s:'활짝 핀 꽃'};
+  return {e:'🌳', s:'커다란 나무'};
+}
 
 /* ---------- home ---------- */
 function renderHome(){
@@ -179,9 +254,17 @@ function renderHome(){
   document.getElementById('h-streak').textContent = streak();
   document.getElementById('home-title-name').textContent = PROFILE.name + '의 단어 왕국';
   document.getElementById('profile-chip').textContent = PROFILE.avatar + ' ' + PROFILE.name;
-  const d = dayRec(), goal = S.cfg.qPer;
-  document.getElementById('h-goal').textContent =
-    d.q >= goal ? `오늘 목표 완성! 🎉 (${d.q}문제)` : `오늘 ${d.q} / ${goal} 문제 — 조금만 더! 💪`;
+  const d = dayRec();
+  const u = todayUnit(), uw = unitWords(u);
+  const doneN = Object.keys(d.udone || {}).length;
+  const advBtn = document.getElementById('btn-adv');
+  if (d.advDone){
+    document.getElementById('h-goal').textContent = `오늘의 모험 완성! 🎉 (Unit ${d.unit})`;
+    advBtn.textContent = '복습 모험 🎀';
+  } else {
+    document.getElementById('h-goal').textContent = `오늘의 모험: Unit ${u} — ${doneN} / ${uw.length} 단어 💪`;
+    advBtn.textContent = doneN > 0 ? `Unit ${u} 이어서 하기! ✨` : `Unit ${u} 모험 시작! ✨`;
+  }
   const dots = document.getElementById('h-dots'); dots.innerHTML = '';
   for (let i = 6; i >= 0; i--){
     const dt = new Date(); dt.setDate(dt.getDate()-i);
@@ -190,13 +273,21 @@ function renderHome(){
     el.textContent = (S.days[key] && S.days[key].q>0) ? '⭐' : '';
     dots.appendChild(el);
   }
-  // 미니게임 최고기록
-  document.getElementById('best-bal').textContent = S.mini.bal ? `최고 ${S.mini.bal}점` : '잘 듣고 팡!';
-  document.getElementById('best-mem').textContent = S.mini.mem ? `최고 ${S.mini.mem}점` : '카드 뒤집기';
-  document.getElementById('best-spd').textContent = S.mini.spd ? `최고 ${S.mini.spd}개` : '60초 도전!';
+  // 미니게임 카드 잠금 상태
+  const locked = !advDoneToday(), owed = testOwed();
+  [['mc-bal','bal','잘 듣고 팡!','점'],['mc-mem','mem','카드 뒤집기','점'],['mc-spd','spd','60초 도전!','개']].forEach(([id, kind, def, unit]) => {
+    const card = document.getElementById(id), ms = card.querySelector('.ms');
+    card.classList.toggle('locked', locked || owed);
+    ms.textContent = locked ? '🔒 모험 먼저!' : owed ? '🎯 깜짝 시험 먼저!'
+      : (S.mini[kind] ? `최고 ${S.mini[kind]}${unit}` : def);
+  });
+  const tc = document.getElementById('mc-test');
+  tc.classList.toggle('urgent', !locked && owed);
+  tc.querySelector('.ms').textContent = owed ? '지금 도전해야 해!' : '실력 확인!';
   const stkN = Object.keys(S.stickers).length;
   document.getElementById('stk-count').textContent = stkN ? `(${stkN}/${STICKERS.length})` : '';
   renderQuests();
+  save();
 }
 
 /* ---------- 일일 퀘스트 ---------- */
@@ -241,51 +332,45 @@ function renderQuests(){
 let Q = null; // {queue:[{k, mode}], idx, correct, stars0, wordsNew:Set, introDone:Set, comboN}
 function pool(){ return ALL.filter(w => w.u >= S.cfg.uFrom && w.u <= S.cfg.uTo); }
 function pickSession(){
-  const p = pool();
-  let fresh = p.filter(w => wRec(w.k).seen === 0);           // unit order by default
-  if (S.cfg.order === 'random') fresh = fresh.sort(() => Math.random()-.5);
-  const learning = p.filter(w => { const r = wRec(w.k); return r.seen > 0 && r.lv < 5; });
-  const mastered = p.filter(w => wRec(w.k).seen > 0 && wRec(w.k).lv >= 5);
+  // 복습 모험: 이미 배운 단어만 낸다 (새 유닛 단어는 다음 날 모험에서만! — 하루 1유닛 규칙)
+  const p = pool().filter(w => wRec(w.k).seen > 0);
+  const learning = p.filter(w => wRec(w.k).lv < 5);
+  const mastered = p.filter(w => wRec(w.k).lv >= 5);
   learning.sort((a,b) => (wRec(b.k).ng - wRec(a.k).ng) || (wRec(a.k).seen - wRec(b.k).seen));
-  // 복습은 최대 reviewN개만 — 나머지는 모두 새 단어로 진도를 나간다
-  const revs = learning.slice(0, Math.min(S.cfg.reviewN, Math.max(0, S.cfg.qPer - 1)));
-  let nNew = S.cfg.qPer - revs.length;
-  const newW = fresh.slice(0, nNew);
-  const extra = [];
-  let fill = revs.length + newW.length;
-  if (fill < S.cfg.qPer){ // 새 단어가 바닥나면 학습중 → 마스터 순으로 채움
-    const moreRev = learning.slice(revs.length, revs.length + (S.cfg.qPer - fill));
-    extra.push(...moreRev); fill += moreRev.length;
+  const list = learning.slice(0, S.cfg.qPer);
+  if (list.length < S.cfg.qPer){
+    list.push(...mastered.sort(() => Math.random()-.5).slice(0, S.cfg.qPer - list.length));
   }
-  if (fill < S.cfg.qPer){
-    const m2 = mastered.sort(() => Math.random()-.5).slice(0, S.cfg.qPer - fill);
-    extra.push(...m2);
-  }
-  // interleave: 새 단어 사이사이에 복습을 끼워 넣기
-  const a = [...newW], b = [...revs, ...extra];
-  const list = [];
-  while (a.length || b.length){
-    if (a.length) list.push(a.shift());
-    if (a.length) list.push(a.shift());
-    if (b.length) list.push(b.shift());
-  }
-  return list.slice(0, S.cfg.qPer);
+  // 틀린 단어가 몰려 나오지 않게 가볍게 섞기
+  return list.sort(() => Math.random()-.5).slice(0, S.cfg.qPer);
 }
 function seenPool(){ return pool().filter(w => wRec(w.k).seen > 0); }
 function modeFor(w){
   const lv = wRec(w.k).lv, hasE = !!w.e;
-  if (lv <= 1) return hasE ? 'w2p' : 'w2k';
-  if (lv === 2) return hasE ? 'p2w' : 'k2w';
+  if (lv <= 1) return hasE ? 'w2p' : 'w2d';
+  if (lv === 2) return hasE ? 'p2w' : 'd2w';
   if (lv === 3) return hasE ? 'l2p' : 'l2w';
   return 'spell';
 }
 async function startSession(){
   ac(); // unlock audio on user gesture
-  const words = pickSession();
+  const d = dayRec();
+  let words, isDaily = false, dailyU = 0;
+  if (!d.advDone){
+    // 오늘의 모험: 오늘의 유닛 전체 (아직 못 맞힌 단어들, 유닛 순서대로)
+    dailyU = todayUnit();
+    d.udone = d.udone || {};
+    words = unitWords(dailyU).filter(w => !d.udone[w.k]);
+    isDaily = true;
+    if (!words.length){ d.advDone = true; save(); renderHome(); return; }
+  } else {
+    words = pickSession(); // 복습 모험
+  }
   if (!words.length){ alert('단어가 없어요! 부모님 설정에서 유닛 범위를 확인해 주세요.'); return; }
   Q = { queue: words.map(w => ({k: w.k})), idx: 0, correct: 0, stars0: S.stars,
         newSet: new Set(words.filter(w => wRec(w.k).seen === 0).map(w => w.k)),
-        introDone: new Set(), comboN: 0, total: words.length, isTest: false };
+        introDone: new Set(), comboN: 0, total: words.length, isTest: false,
+        isDaily, unit: dailyU, batch: [] };
   showScreen('scr-game');
   document.getElementById('r-again').onclick = startSession;
   document.getElementById('g-timer').classList.add('hidden');
@@ -301,7 +386,13 @@ async function startTest(){
   const seen = seenPool();
   if (seen.length < 8){ alert('아직 시험을 보기엔 배운 단어가 부족해요!\n모험을 몇 번 더 한 뒤에 도전해 보세요 😊'); return; }
   const n = Math.min(S.cfg.testQ, seen.length);
-  const words = seen.sort(() => Math.random()-.5).slice(0, n);
+  // 자주 틀리는 단어를 우선 포함 (최대 40%), 나머지는 랜덤 출제
+  const wrongs = seen.filter(w => wRec(w.k).ng > 0)
+                     .sort((a,b) => wRec(b.k).ng - wRec(a.k).ng)
+                     .slice(0, Math.max(0, Math.round(n * 0.4)));
+  const wrongSet = new Set(wrongs.map(w => w.k));
+  const rest = seen.filter(w => !wrongSet.has(w.k)).sort(() => Math.random()-.5).slice(0, n - wrongs.length);
+  const words = [...wrongs, ...rest].sort(() => Math.random()-.5);
   await ensureAudioFor(words);
   Q = { queue: words.map(w => ({k: w.k})), idx: 0, correct: 0, stars0: S.stars,
         newSet: new Set(), introDone: new Set(), comboN: 0, total: n,
@@ -328,7 +419,12 @@ function confirmQuit(){
 /* ---------- question flow ---------- */
 function nextQ(){
   updateProg();
-  if (Q.idx >= Q.queue.length){ endSession(false); return; }
+  // 5단어를 배울 때마다 줄긋기 게임 (시험 제외)
+  if (!Q.isTest && Q.batch && Q.batch.length >= 5){ renderMatch(Q.batch.splice(0, 5)); return; }
+  if (Q.idx >= Q.queue.length){
+    if (!Q.isTest && Q.batch && Q.batch.length >= 2){ renderMatch(Q.batch.splice(0, Q.batch.length)); return; }
+    endSession(false); return;
+  }
   const k = Q.queue[Q.idx].k, w = BYKEY[k];
   if (Q.newSet.has(k) && !Q.introDone.has(k) && S.cfg.introEach){
     renderIntro(w); return;
@@ -344,28 +440,46 @@ function area(){ return document.getElementById('g-area'); }
 
 function renderIntro(w){
   Q.introDone.add(w.k);
+  const ex = w.ex ? w.ex.split('\n')[0] : '';
   area().innerHTML = `
     <div class="intro-card">
       <div class="intro-emoji">${w.e || '🌟'}</div>
       <div class="intro-word">${w.w}</div>
-      <div class="intro-kor">${w.kor}</div>
-      ${w.ex ? `<div class="intro-ex">${w.ex.split('\n')[0]}</div>` : ''}
+      <div class="intro-pos">${w.pos || ''}</div>
+      ${ex ? `<div class="intro-ex">${ex}</div>` : ''}
       <div style="display:flex; gap:3vmin; align-items:center; margin-top:1vmin;">
         <button class="speaker" onclick="playWord('${w.k}')">🔊</button>
-        <button class="big-btn" style="font-size:4vmin; padding:1.8vmin 6vmin;" onclick="nextQ()">알겠어! ✨</button>
+        ${ex ? `<button class="speaker" title="예문 듣기" onclick="speakEn(BYKEY['${w.k}'].ex)">📢</button>` : ''}
+        <button class="big-btn" style="font-size:4vmin; padding:1.8vmin 6vmin;" onclick="renderIntroDef('${w.k}')">다음 ➡️</button>
       </div>
     </div>`;
   playWord(w.k);
 }
+function renderIntroDef(k){
+  const w = BYKEY[k];
+  area().innerHTML = `
+    <div class="intro-card">
+      <div class="intro-emoji" style="font-size:9vmin;">${w.e || '🌟'}</div>
+      <div class="intro-word" style="font-size:7.5vmin;">${w.w}</div>
+      <div class="intro-deflabel">What does it mean?</div>
+      <div class="intro-def">"${w.def}"</div>
+      <div style="display:flex; gap:3vmin; align-items:center; margin-top:1vmin;">
+        <button class="speaker" onclick="playWord('${w.k}')">🔊</button>
+        <button class="speaker" title="뜻 듣기" onclick="speakEn(BYKEY['${w.k}'].def)">📢</button>
+        <button class="big-btn" style="font-size:4vmin; padding:1.8vmin 6vmin;" onclick="nextQ()">알겠어! ✨</button>
+      </div>
+    </div>`;
+  speakEn(w.def);
+}
 
 function distractors(w, n){
-  const p = pool().filter(x => x.k !== w.k && x.kor !== w.kor);
+  const p = pool().filter(x => x.k !== w.k && x.def !== w.def);
   const sameU = p.filter(x => x.u === w.u), rest = p.filter(x => x.u !== w.u);
   const cand = [...sameU.sort(()=>Math.random()-.5), ...rest.sort(()=>Math.random()-.5)];
   const out = [], seen = new Set([w.e, null]);
   for (const c of cand){
     if (out.length >= n) break;
-    if (out.some(o => o.kor === c.kor || o.w === c.w)) continue;
+    if (out.some(o => o.def === c.def || o.w === c.w)) continue;
     if (w.e && (!c.e || seen.has(c.e))) { if (['w2p','l2p'].includes(curMode)) continue; }
     out.push(c); if (c.e) seen.add(c.e);
   }
@@ -382,14 +496,15 @@ function renderChoice(w, mode){
   if (mode === 'w2p'){ instr = '어떤 그림일까? 그림을 골라봐!';
     promptHtml = `<div class="q-main">${w.w}</div><button class="speaker" onclick="playWord('${w.k}')">🔊</button>`;
     optHtml = o => `<span class="big-e">${o.e || '❓'}</span>`;
-  } else if (mode === 'w2k'){ instr = '무슨 뜻일까? 골라봐!';
+  } else if (mode === 'w2d'){ instr = '무슨 뜻일까? 영어 설명을 골라봐!';
     promptHtml = `<div class="q-main">${w.w}</div><button class="speaker" onclick="playWord('${w.k}')">🔊</button>`;
-    optHtml = o => `<span class="opt-kor" style="font-size:4.2vmin;">${o.kor}</span>`;
+    optHtml = o => `<span class="opt-def">${o.def}</span>`;
   } else if (mode === 'p2w'){ instr = '이 그림은 영어로 뭘까?';
     promptHtml = `<div class="q-main emoji">${w.e}</div>`;
     optHtml = o => `<span>${o.w}</span>`;
-  } else if (mode === 'k2w'){ instr = '이 뜻을 가진 영어 단어는?';
-    promptHtml = `<div class="q-main" style="font-size:5.5vmin;">${w.kor}</div>`;
+  } else if (mode === 'd2w'){ instr = '이 설명에 맞는 영어 단어는?';
+    promptHtml = `<div class="q-main" style="font-size:3.6vmin; line-height:1.4; max-width:70vmin;">"${w.def}"</div>
+      <button class="speaker" onclick="speakEn(BYKEY['${w.k}'].def)">📢</button>`;
     optHtml = o => `<span>${o.w}</span>`;
   } else if (mode === 'l2p'){ instr = '잘 듣고 그림을 골라봐!';
     promptHtml = `<button class="speaker big" onclick="playWord('${w.k}')">🔊</button>`;
@@ -402,7 +517,7 @@ function renderChoice(w, mode){
     <div class="q-card"><div class="q-instr">${instr}</div>${promptHtml}</div>
     <div class="opts">${opts.map((o,i) =>
       `<button class="opt" data-i="${i}" onclick="pick(this, ${i === ansIdx}, '${w.k}')">${optHtml(o)}</button>`).join('')}</div>`;
-  if (mode === 'w2p' || mode === 'w2k' || mode === 'l2p' || mode === 'l2w') playWord(w.k);
+  if (mode === 'w2p' || mode === 'w2d' || mode === 'l2p' || mode === 'l2w') playWord(w.k);
 }
 
 let lock = false;
@@ -429,8 +544,13 @@ function pick(btn, isRight, k){
     onWrong(k);
   }
 }
+function markDaily(k){
+  if (Q && Q.isDaily){ const d = dayRec(); d.udone = d.udone || {}; d.udone[k] = 1; }
+}
 function onCorrect(el, k){
   const r = wRec(k); r.seen++; r.ok++; r.lv = Math.min(5, r.lv + 1);
+  markDaily(k);
+  if (!Q.isTest && Q.batch && !Q.batch.includes(k)) Q.batch.push(k);
   Q.comboN++; Q.correct++;
   let gain = 10;
   if (Q.comboN >= 3){ gain += 5; comboShow(); }
@@ -469,6 +589,61 @@ function comboShow(){
   setTimeout(() => t.classList.remove('show'), 900);
 }
 
+/* ---------- 🖍️ 줄긋기 게임 (5단어마다) ---------- */
+let MT = null;
+function renderMatch(keys){
+  const words = keys.map(k => BYKEY[k]).filter(Boolean);
+  if (!words.length){ nextQ(); return; }
+  MT = { sel: null, left: words.length };
+  const order = [...words].sort(() => Math.random()-.5);
+  area().innerHTML = `
+    <div class="q-card" style="padding:1.6vmin 2vmin;"><div class="q-instr">🖍️ 단어와 영어 뜻을 선으로 이어봐!</div></div>
+    <div class="match-wrap" id="mt-wrap">
+      <svg class="mt-lines" id="mt-lines"></svg>
+      <div class="match-col">${words.map(w =>
+        `<button class="mt-item mt-w" id="mtw-${w.k}" onclick="mtPick('w','${w.k}')">${w.e ? w.e + ' ' : ''}${w.w}</button>`).join('')}</div>
+      <div class="match-col">${order.map(w =>
+        `<button class="mt-item mt-d" id="mtd-${w.k}" onclick="mtPick('d','${w.k}')">${w.def}</button>`).join('')}</div>
+    </div>`;
+  sfxPop();
+}
+function mtPick(side, k){
+  if (!MT) return;
+  const el = document.getElementById((side === 'w' ? 'mtw-' : 'mtd-') + k);
+  if (!el || el.classList.contains('matched')) return;
+  if (side === 'w'){
+    MT.sel = k; sfxPop(); playWord(k);
+    document.querySelectorAll('.mt-w').forEach(e => e.classList.toggle('sel', e.id === 'mtw-' + k));
+    return;
+  }
+  if (!MT.sel){ speakEn(BYKEY[k] && BYKEY[k].def); return; }
+  const wk = MT.sel;
+  if (wk === k){
+    MT.sel = null;
+    const a = document.getElementById('mtw-' + k);
+    a.classList.remove('sel'); a.classList.add('matched'); el.classList.add('matched');
+    mtLine(a, el);
+    sfxOk();
+    S.stars += 4; dayRec().stars += 4; questRec().stars += 4;
+    document.getElementById('g-stars').textContent = S.stars;
+    const r = el.getBoundingClientRect(); burst(r.left + r.width/2, r.top + r.height/2, false);
+    MT.left--;
+    if (MT.left <= 0){ save(); setTimeout(() => { MT = null; sfxFanfare(); nextQ(); }, 1000); }
+  } else {
+    sfxNo();
+    el.classList.add('wrongpick'); setTimeout(() => el.classList.remove('wrongpick'), 450);
+  }
+}
+function mtLine(a, b){
+  const wrap = document.getElementById('mt-wrap'), svg = document.getElementById('mt-lines');
+  if (!wrap || !svg) return;
+  const wr = wrap.getBoundingClientRect(), ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+  const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  ln.setAttribute('x1', ra.right - wr.left); ln.setAttribute('y1', ra.top + ra.height/2 - wr.top);
+  ln.setAttribute('x2', rb.left - wr.left);  ln.setAttribute('y2', rb.top + rb.height/2 - wr.top);
+  svg.appendChild(ln);
+}
+
 /* ---------- spelling ---------- */
 function renderSpell(w){
   curMode = 'spell';
@@ -482,9 +657,10 @@ function renderSpell(w){
       <div class="q-instr">글자를 순서대로 눌러 단어를 완성해봐!</div>
       <div style="display:flex; align-items:center; gap:3vmin;">
         <div class="q-main emoji" style="font-size:11vmin;">${w.e || '🌟'}</div>
-        <div>
-          <div class="q-sub" style="font-size:4vmin; font-weight:800;">${w.kor}</div>
+        <div style="max-width:52vmin;">
+          <div class="q-sub" style="font-size:2.9vmin; font-weight:700; color:#3a7a58; line-height:1.35;">"${w.def}"</div>
           <button class="speaker" style="margin-top:1vmin;" onclick="playWord('${w.k}')">🔊</button>
+          <button class="speaker" style="margin-top:1vmin;" onclick="speakEn(BYKEY['${w.k}'].def)">📢</button>
         </div>
       </div>
     </div>
@@ -525,6 +701,8 @@ function renderSpell(w){
 }
 function onCorrectSpell(k, wrongTries, rect){
   const r = wRec(k); r.seen++;
+  markDaily(k);
+  if (!Q.isTest && Q.batch && !Q.batch.includes(k)) Q.batch.push(k);
   const clean = wrongTries <= 1;
   if (clean){ r.ok++; r.lv = Math.min(5, r.lv + 1); } // gentle
   if (Q.isTest && !clean){
@@ -550,6 +728,17 @@ function endSession(quit){
   clearInterval(testTick);
   document.getElementById('g-timer').classList.add('hidden');
   if (!quit && !Q.isTest){ S.sessions++; questRec().adv++; }
+  if (!quit && Q.isTest) S.miniSinceTest = 0;  // 깜짝시험 완료 → 미니게임 다시 열림
+  let dailyClear = false;
+  if (Q.isDaily){
+    const d = dayRec();
+    if (Object.keys(d.udone || {}).length >= unitWords(Q.unit).length && !d.advDone){
+      d.advDone = true; dailyClear = true;
+      // 자동 진행 모드일 때만 진도 포인터 전진 (관리자 직접 선택은 진도에 영향 없음)
+      const pick = Math.max(0, parseInt(S.cfg.unitPick, 10) || 0);
+      if (!pick) S.prog = { unit: Q.unit, doneDate: today() };
+    }
+  }
   if (!quit) sfxFanfare();
   checkQuests();
   const earned = S.stars - Q.stars0;
@@ -565,9 +754,13 @@ function endSession(quit){
   } else {
     document.getElementById('r-words').textContent = Q.newSet.size;
     document.getElementById('r-words-lab').textContent = '배운 단어';
-    const titles = ['완벽해, 지인 공주님! 👑', '오늘도 최고야! 💖', '유니콘이 감동했어! 🦄', '반짝반짝 빛나는 실력! ✨'];
-    document.getElementById('res-title').textContent =
-      Q.correct >= Q.total ? titles[0] : titles[1 + Math.floor(Math.random()*3)];
+    if (dailyClear){
+      document.getElementById('res-title').textContent = `🎉 Unit ${Q.unit} 완성! 미니게임이 열렸어! 🎈`;
+    } else {
+      const titles = ['완벽해, ' + PROFILE.name + ' 공주님! 👑', '오늘도 최고야! 💖', '유니콘이 감동했어! 🦄', '반짝반짝 빛나는 실력! ✨'];
+      document.getElementById('res-title').textContent =
+        Q.correct >= Q.total ? titles[0] : titles[1 + Math.floor(Math.random()*3)];
+    }
   }
   // friend unlock check
   const before = FRIENDS.filter(f => f.c <= Q.stars0).length;
@@ -590,15 +783,39 @@ function endSession(quit){
   }
 }
 
-/* ---------- collection ---------- */
+/* ---------- collection (나의 왕국) ---------- */
 function renderCollection(){
   document.getElementById('col-title').textContent = '🏰 ' + PROFILE.name + '의 왕국';
-  const st = castleStage();
-  document.getElementById('castle-scene').textContent = '';
-  document.getElementById('castle-scene').innerHTML = CASTLE_STAGES[st].split('\n').map(l=>`<div>${l}</div>`).join('');
-  const nextIn = st >= CASTLE_STAGES.length-1 ? null : (st+1)*3 - S.sessions;
+  // ① 하늘 장식 (별로 잠금 해제)
+  const sky = document.getElementById('kg-sky'); sky.innerHTML = '';
+  KG_DECOS.forEach(dc => {
+    const got = S.stars >= dc.c;
+    const el = document.createElement('div');
+    el.className = 'kg-deco' + (got ? '' : ' locked');
+    el.title = got ? dc.n : `⭐${dc.c}`;
+    el.textContent = got ? dc.e : '❔';
+    if (got) el.onclick = () => { sfxPop(); const r = el.getBoundingClientRect(); burst(r.left+r.width/2, r.top+r.height/2, false); };
+    sky.appendChild(el);
+  });
+  // ② 왕궁
+  const st = castleStage(), cl = CASTLE_LEVELS[st];
+  document.getElementById('kg-castle').textContent = cl.e;
+  document.getElementById('kg-castle-name').textContent = `${cl.n} (${st+1}단계 / ${CASTLE_LEVELS.length}단계)`;
+  const nextIn = st >= CASTLE_LEVELS.length-1 ? null : (st+1)*3 - S.sessions;
   document.getElementById('castle-progress').textContent =
-    nextIn === null ? '왕국이 완성됐어요! 🌈👑' : `모험 ${nextIn}번 더 하면 왕국이 자라나요! (지금 ${S.sessions}번 완료)`;
+    nextIn === null ? '왕궁이 완성됐어요! 🌈👑' : `모험 ${nextIn}번 더 하면 왕궁이 자라나요! (지금까지 ${S.sessions}번 완료)`;
+  // ③ 단어 정원 (유닛마다 새싹이 자란다)
+  const garden = document.getElementById('kg-garden'); garden.innerHTML = '';
+  for (let u = S.cfg.uFrom; u <= S.cfg.uTo; u++){
+    const p = plantFor(u);
+    const el = document.createElement('div');
+    el.className = 'kg-plant';
+    el.title = `Unit ${u} — ${p.s}`;
+    el.innerHTML = `<div class="pe">${p.e}</div><div class="pu">U${u}</div>`;
+    el.onclick = () => { sfxPop(); const r = el.getBoundingClientRect(); burst(r.left+r.width/2, r.top+r.height/2, false); };
+    garden.appendChild(el);
+  }
+  // ④ 유니콘 친구들
   const grid = document.getElementById('uni-grid'); grid.innerHTML = '';
   FRIENDS.forEach(f => {
     const got = S.stars >= f.c;
@@ -611,12 +828,16 @@ function renderCollection(){
   });
 }
 
-/* ---------- parent gate ---------- */
-let gateAns = 0;
+/* ---------- parent gate (보안 강화: 두 자리 × 한 자리 곱셈 + 연속 오답 잠금) ---------- */
+let gateAns = 0, gateFails = 0, gateLockUntil = 0;
 function openGate(){
-  const a = 12 + Math.floor(Math.random()*77), b = 13 + Math.floor(Math.random()*76);
-  gateAns = a + b;
-  document.getElementById('gate-q').textContent = `${a} + ${b} = ?`;
+  if (Date.now() < gateLockUntil){
+    askInfo('설정 화면이 잠깐 잠겼어요.\n조금 뒤에 다시 시도해 주세요 🔒');
+    return;
+  }
+  const a = 12 + Math.floor(Math.random()*78), b = 3 + Math.floor(Math.random()*7);
+  gateAns = a * b;
+  document.getElementById('gate-q').textContent = `${a} × ${b} = ?`;
   document.getElementById('gate-in').value = '';
   document.getElementById('gate').classList.add('show');
   setTimeout(() => document.getElementById('gate-in').focus(), 100);
@@ -624,17 +845,53 @@ function openGate(){
 function closeGate(){ document.getElementById('gate').classList.remove('show'); }
 function checkGate(){
   if (parseInt(document.getElementById('gate-in').value, 10) === gateAns){
+    gateFails = 0;
     closeGate(); renderParent(); showScreen('scr-parent');
-  } else { closeGate(); }
+  } else {
+    gateFails++;
+    if (gateFails >= 3){ gateFails = 0; gateLockUntil = Date.now() + 60000; } // 3회 오답 → 1분 잠금
+    closeGate();
+  }
 }
 
 /* ---------- modal ---------- */
 function askModal(msg, onYes){
   const m = document.getElementById('modal');
   document.getElementById('modal-msg').textContent = msg;
+  document.getElementById('modal-no').style.display = '';
+  document.getElementById('modal-yes').textContent = '네';
   m.classList.add('show');
   document.getElementById('modal-yes').onclick = () => { m.classList.remove('show'); onYes(); };
   document.getElementById('modal-no').onclick = () => m.classList.remove('show');
+}
+function askInfo(msg){
+  const m = document.getElementById('modal');
+  document.getElementById('modal-msg').textContent = msg;
+  document.getElementById('modal-no').style.display = 'none';
+  document.getElementById('modal-yes').textContent = '알겠어! ✨';
+  m.classList.add('show');
+  document.getElementById('modal-yes').onclick = () => m.classList.remove('show');
+}
+
+/* ---------- 미니게임 잠금 규칙 ----------
+   ① 오늘의 모험(유닛 1개)을 끝내야 미니게임이 열린다
+   ② 미니게임을 3번 하면 깜짝 시험을 1번 봐야 다시 열린다 */
+function miniGateOK(){
+  if (!advDoneToday()){
+    askInfo('오늘의 모험을 먼저 끝내야\n미니게임을 할 수 있어! 🗺️✨');
+    return false;
+  }
+  if (testOwed()){
+    askModal('미니게임을 3번 했구나!\n🎯 깜짝 시험을 봐야 미니게임이 다시 열려.\n지금 도전해 볼까?', startTest);
+    return false;
+  }
+  return true;
+}
+function goMini(kind){
+  if (!miniGateOK()) return;
+  if (kind === 'bal') startBalloon();
+  else if (kind === 'mem') startMemory();
+  else startSpeed();
 }
 
 /* ---------- parent screen ---------- */
@@ -651,26 +908,31 @@ function renderParent(){
     const uw = ALL.filter(w => w.u === u);
     const seenN = uw.filter(w => wRec(w.k).seen > 0).length;
     const m = uw.filter(w => wRec(w.k).lv >= 4).length;
-    // 진행도 = 각 단어 레벨(0~5)의 합 / 최대치 — 한 문제만 맞혀도 바로 올라간다
-    const progPct = uw.reduce((s,w) => s + Math.min(5, wRec(w.k).lv), 0) / (uw.length * 5) * 100;
-    unitBars += `<div class="ub">Unit ${u} — 학습 ${seenN}/25 · 마스터 ${m}<div class="track"><div class="fillb" style="width:${progPct}%"></div></div></div>`;
+    // 진행도 = 학습한 단어 비율 — 유닛을 다 배우면 100%가 된다
+    const progPct = uw.length ? (seenN / uw.length * 100) : 0;
+    unitBars += `<div class="ub">Unit ${u} — 학습 ${seenN}/${uw.length} · 마스터 ${m}<div class="track"><div class="fillb" style="width:${progPct}%"></div></div></div>`;
   }
   const selN = (id, from, to, val, step) => { let h = `<select id="${id}">`;
     for (let v = from; v <= to; v += (step||1)) h += `<option value="${v}" ${v==val?'selected':''}>${v}</option>`;
     return h + '</select>'; };
   document.getElementById('p-body').innerHTML = `
+    <div class="p-sec"><h3>🎯 학습 유닛 선택</h3>
+      <div class="p-row"><label><input type="radio" name="cfg-upick" value="0" ${!c.unitPick ? 'checked' : ''}> <b>자동 진행</b> — 오늘의 유닛을 완료하면 <b>다음 날</b> 다음 유닛으로 넘어가요 (하루 1유닛, 완료 못 하면 그 유닛 유지)</label></div>
+      <div class="p-row"><label><input type="radio" name="cfg-upick" value="1" ${c.unitPick ? 'checked' : ''}> <b>직접 선택</b> —</label> ${selN('cfg-upicksel',1,30,c.unitPick || todayUnit())} 유닛에 <b>계속 머물러요</b> (자동 진행 멈춤)</div>
+      <div class="p-row" style="font-size:2.6vmin;color:#a58bb8;">${c.unitPick
+        ? `📌 지금 <b>Unit ${c.unitPick}</b>에 머무는 중이에요. 자동 진행은 멈춰 있고, "자동 진행"으로 바꾸면 이어서 진행돼요.`
+        : `▶️ 자동 진행 중 — 오늘의 유닛: <b>Unit ${todayUnit()}</b>${advDoneToday() ? ' (완료 🎉)' : ''}`}</div>
+    </div>
     <div class="p-sec"><h3>📚 학습 범위와 분량</h3>
       <div class="p-row">유닛 ${selN('cfg-uf',1,30,c.uFrom)} 부터 ${selN('cfg-ut',1,30,c.uTo)} 까지</div>
-      <div class="p-row">새 단어 출제 순서
-        <select id="cfg-order">
-          <option value="seq" ${c.order==='seq'?'selected':''}>유닛 순서대로</option>
-          <option value="random" ${c.order==='random'?'selected':''}>랜덤</option>
-        </select></div>
-      <div class="p-row">하루 새 단어 ${selN('cfg-new',2,20,c.dailyNew)} 개</div>
-      <div class="p-row">한 모험(세션) 문제 수 ${selN('cfg-q',6,30,c.qPer)} 개</div>
-      <div class="p-row">세션당 복습 문제 수 ${selN('cfg-rev',0,10,c.reviewN)} 개 <span style="font-size:2.4vmin;color:#a58bb8;">(이전에 배운 단어 다시 내기)</span></div>
+      <div class="p-row" style="font-size:2.6vmin;color:#a58bb8;">🗺️ 하루 모험 분량은 <b>유닛 1개 전체(25단어)</b>예요. 오늘의 유닛을 다 끝내야 미니게임이 열립니다.</div>
+      <div class="p-row">복습 모험 문제 수 ${selN('cfg-q',6,30,c.qPer)} 개 <span style="font-size:2.4vmin;color:#a58bb8;">(오늘의 유닛을 끝낸 뒤 추가 모험 — 이미 배운 단어만 나와요)</span></div>
       <div class="p-row"><label><input type="checkbox" id="cfg-intro" ${c.introEach?'checked':''}> 새 단어는 먼저 카드로 보여주기</label></div>
       <div class="p-row"><button class="ok-btn" onclick="saveCfg()">설정 저장 ✓</button></div>
+    </div>
+    <div class="p-sec"><h3>🎪 미니게임 규칙</h3>
+      <div class="p-row" style="font-size:2.6vmin;color:#a58bb8;">미니게임을 3번 하면 🎯 깜짝 시험을 1번 봐야 다시 열려요.
+        (지금까지 시험 없이 한 미니게임: <b>${S.miniSinceTest || 0} / 3</b>)</div>
     </div>
     <div class="p-sec"><h3>🎯 깜짝 시험 (타임어택)</h3>
       <div class="p-row">문제 수 ${selN('cfg-tq',10,50,c.testQ,5)} 개 · 제한 시간 ${selN('cfg-tm',5,40,c.testMin,5)} 분</div>
@@ -701,9 +963,18 @@ function saveCfg(){
   let uf = +g('cfg-uf').value, ut = +g('cfg-ut').value;
   if (uf > ut) [uf, ut] = [ut, uf];
   S.cfg.uFrom = uf; S.cfg.uTo = ut;
-  S.cfg.dailyNew = +g('cfg-new').value; S.cfg.qPer = +g('cfg-q').value;
-  S.cfg.order = g('cfg-order').value;
-  S.cfg.reviewN = +g('cfg-rev').value;
+  const prevPick = Math.max(0, parseInt(S.cfg.unitPick, 10) || 0);
+  const pickOn = document.querySelector('input[name="cfg-upick"]:checked');
+  const newPick = (pickOn && pickOn.value === '1') ? +g('cfg-upicksel').value : 0;
+  if (newPick !== prevPick){
+    // 유닛 설정이 바뀌면 오늘의 모험을 새 유닛으로 다시 시작할 수 있게 리셋
+    const d = dayRec();
+    d.unit = 0; d.udone = {}; d.advDone = false; delete d.forced;
+  }
+  S.cfg.unitPick = newPick;
+  todayUnit(); // 오늘 기록에 즉시 반영
+  S.cfg.qPer = +g('cfg-q').value;
+  if (g('cfg-rev')) S.cfg.reviewN = +g('cfg-rev').value;
   S.cfg.testQ = +g('cfg-tq').value; S.cfg.testMin = +g('cfg-tm').value;
   S.cfg.introEach = g('cfg-intro').checked;
   save(); renderParent();
@@ -796,6 +1067,7 @@ function quitMini(){ clearInterval(mgTimer); clearTimeout(MG && MG.to); save(); 
 function endMini(kind, score, label){
   clearInterval(mgTimer); clearTimeout(MG && MG.to);
   questRec().mini++;
+  S.miniSinceTest = (S.miniSinceTest || 0) + 1;
   if (score > (S.mini[kind] || 0)) S.mini[kind] = score;
   checkQuests();
   const earned = S.stars - MG.stars0;
@@ -806,7 +1078,8 @@ function endMini(kind, score, label){
   document.getElementById('res-title').textContent = label;
   document.getElementById('res-uni').textContent = ['🦄','🎉🦄','🌈🦄'][Math.floor(Math.random()*3)];
   document.getElementById('r-unlock').classList.add('hidden');
-  document.getElementById('r-again').onclick = MG.restart;
+  const rst = MG.restart;
+  document.getElementById('r-again').onclick = () => { if (miniGateOK()) rst(); };
   save();
   showScreen('scr-result');
   sfxFanfare();
@@ -876,7 +1149,7 @@ async function startMemory(){
   showScreen('scr-mini');
   document.getElementById('m-timer').classList.add('hidden');
   document.getElementById('m-stars').textContent = S.stars;
-  document.getElementById('mini-instr').textContent = '🃏 단어와 그림 짝을 찾아봐!';
+  document.getElementById('mini-instr').textContent = '🃏 단어와 그림 짝을 찾아봐! (6번째부터는 틀리면 별 -3 💔)';
   const cards = [];
   words.forEach(w => { cards.push({k:w.k, face:w.w, kind:'w'}); cards.push({k:w.k, face:w.e, kind:'e'}); });
   cards.sort(() => Math.random()-.5);
@@ -908,6 +1181,13 @@ function memFlip(el, c){
     }
   } else {
     MG.lockM = true; sfxNo();
+    // 5번 이상 뒤집은 뒤부터는 틀리면 별 -3
+    if (MG.flips > 5){
+      mgStars(-3);
+      const mi = document.getElementById('mini-instr'), keep = mi.textContent;
+      mi.textContent = '💔 -3 ⭐';
+      setTimeout(() => { mi.textContent = keep; }, 800);
+    }
     setTimeout(() => { f.el.classList.remove('flip'); el.classList.remove('flip'); MG.lockM = false; }, 900);
   }
 }
@@ -963,11 +1243,39 @@ function speedQ(){
 }
 
 /* ================================================================
+   도움말 (처음 오면 자동으로 보여줘요)
+   ================================================================ */
+const HELP_PAGES = [
+  {e:'🗺️', t:'모험을 떠나요!', d:'하루에 한 유닛(25단어)씩 모험을 해요.\n영어 예문과 영어 뜻으로 배우고,\n5단어마다 🖍️ 줄긋기 게임도 나와요!'},
+  {e:'🎈', t:'미니게임이 기다려요', d:'오늘의 모험을 다 끝내면\n풍선 팡팡 · 짝 맞추기 · 스피드 퀴즈가 열려요!\n먼저 공부, 그다음 놀이! 😊'},
+  {e:'🎯', t:'깜짝 시험', d:'미니게임을 3번 하고 나면\n깜짝 시험에 도전해야 미니게임이 다시 열려요.\n배운 단어에서만 나오니까 걱정 마요!'},
+  {e:'⭐', t:'별을 모아요', d:'정답을 맞히면 별 +10, 연속으로 맞히면 콤보 보너스!\n틀리면 별이 5개 도망가요.\n별을 모으면 유니콘 친구들이 찾아와요 🦄'},
+  {e:'🏰', t:'나의 왕국', d:'모험을 할수록 왕궁이 점점 커지고\n유닛을 배울 때마다 정원에 새싹이 자라요!\n스티커북도 꼭 구경해 봐요 📔'},
+];
+let helpIdx = 0;
+function openHelp(){ helpIdx = 0; renderHelp(); document.getElementById('help').classList.add('show'); }
+function renderHelp(){
+  const p = HELP_PAGES[helpIdx];
+  document.getElementById('hp-emoji').textContent = p.e;
+  document.getElementById('hp-title').textContent = p.t;
+  document.getElementById('hp-desc').textContent = p.d;
+  document.getElementById('hp-dots').innerHTML = HELP_PAGES.map((_,i) =>
+    `<span class="hdot${i===helpIdx?' on':''}"></span>`).join('');
+  document.getElementById('hp-prev').style.visibility = helpIdx === 0 ? 'hidden' : 'visible';
+  document.getElementById('hp-next').textContent = helpIdx === HELP_PAGES.length-1 ? '시작하기! 🚀' : '다음 →';
+}
+function helpNext(){ sfxPop(); if (helpIdx < HELP_PAGES.length-1){ helpIdx++; renderHelp(); } else closeHelp(); }
+function helpPrev(){ sfxPop(); if (helpIdx > 0){ helpIdx--; renderHelp(); } }
+function closeHelp(){ document.getElementById('help').classList.remove('show');
+  if (!S.helpSeen){ S.helpSeen = 1; save(); } }
+
+/* ================================================================
    boot — 클라우드 동기화 후 시작
    ================================================================ */
 load();
 renderHome();
 document.getElementById('gate-in').addEventListener('keydown', e => { if (e.key === 'Enter') checkGate(); });
+if (!S.helpSeen) setTimeout(openHelp, 700);
 
 (function cloudBoot(){
   if (!(window.Cloud && Cloud.enabled) || PROFILE.guest || !PROFILE.uid) return;
@@ -975,22 +1283,62 @@ document.getElementById('gate-in').addEventListener('keydown', e => { if (e.key 
     if (!u || u.uid !== PROFILE.uid) return;
     try {
       const c = await Cloud.loadProgress(PROFILE.pid, 'wordKingdom');
-      if (c && c.state && (c.updatedAt || 0) > (S._ts || 0)){
+      const localEmpty = !hasProgress(S);
+      // 이 기기의 기록이 비어 있으면 시간과 상관없이 무조건 클라우드 기록을 가져온다
+      // (새 기기에서 첫 화면 저장이 클라우드 기록을 덮어쓰던 버그 수정)
+      if (c && c.state && hasProgress(c.state) && (localEmpty || (c.updatedAt || 0) > (S._ts || 0))){
         S = c.state;
         const d = defState();
         S.cfg = Object.assign(d.cfg, S.cfg || {});
         S.stickers = S.stickers || {}; S.mini = Object.assign(d.mini, S.mini || {});
+        S.miniSinceTest = Math.max(0, parseInt(S.miniSinceTest, 10) || 0);
         try { localStorage.setItem(SKEY, JSON.stringify(S)); } catch(e){}
+        _pendingSave = false;
+        _cloudReady = true;
         renderHome();
-      } else if (S._ts) {
-        Cloud.saveProgressNow(PROFILE.pid, 'wordKingdom', S);
+      } else {
+        _cloudReady = true;
+        // 클라우드가 비어 있는데 이 기기에 게스트(로그인 전) 기록이 있으면 가져오기 제안
+        if ((!c || !hasProgress(c && c.state)) && localEmpty){
+          const g = findGuestSave();
+          if (g){
+            askModal('이 기기에 로그인 전(게스트) 학습 기록이 있어요!\n⭐' + (g.data.stars||0) + ' · 모험 ' + (g.data.sessions||0) + '회\n이 프로필로 가져올까요?', () => {
+              S = g.data;
+              const d = defState();
+              S.cfg = Object.assign(d.cfg, S.cfg || {});
+              S.stickers = S.stickers || {}; S.mini = Object.assign(d.mini, S.mini || {});
+              save(); renderHome();
+            });
+          }
+        }
+        if (_pendingSave || hasProgress(S)){
+          _pendingSave = false;
+          Cloud.saveProgressNow(PROFILE.pid, 'wordKingdom', S);
+        }
       }
-    } catch(e){ console.warn(e); }
+    } catch(e){ console.warn(e); _cloudReady = true; }
   });
-  addEventListener('beforeunload', () => {
-    if (Cloud.user) Cloud.saveProgressNow(PROFILE.pid, 'wordKingdom', S);
-  });
+  // 화면을 벗어날 때 즉시 저장 (모바일에서 debounce 저장이 유실되는 것 방지)
+  const flush = () => { if (Cloud.user && _cloudReady && hasProgress(S)) Cloud.saveProgressNow(PROFILE.pid, 'wordKingdom', S); };
+  addEventListener('beforeunload', flush);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
 })();
+function findGuestSave(){
+  let best = null;
+  try {
+    for (let i = 0; i < localStorage.length; i++){
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith('wk_v3_') || key === SKEY) continue;
+      const pid = key.slice(6);
+      if (pid !== 'local' && pid[0] !== 'g') continue; // 게스트 프로필만
+      const d = JSON.parse(localStorage.getItem(key));
+      if (!hasProgress(d)) continue;
+      const score = (d.stars || 0) + (d.sessions || 0) * 100;
+      if (!best || score > best.score) best = { key, data: d, score };
+    }
+  } catch(e){}
+  return best;
+}
 
-// 첫 화면에서 현재 진도 유닛 오디오 미리 로딩 (백그라운드)
-setTimeout(() => { try { ensureAudioFor(pickSession()); } catch(e){} }, 1200);
+// 첫 화면에서 오늘의 유닛 오디오 미리 로딩 (백그라운드)
+setTimeout(() => { try { ensureAudioUnit(todayUnit()); } catch(e){} }, 1200);
