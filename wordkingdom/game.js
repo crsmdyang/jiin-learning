@@ -32,7 +32,7 @@ const ALL = []; // {k, u, i, w, pos, kor, eng, ex, e}
     const arr = WORDS[String(u)] || [];
     arr.forEach((w, i) => {
       ALL.push({ k: `u${String(u).padStart(2,'0')}_${String(i).padStart(2,'0')}`,
-                 u, i, w: w.w, pos: w.pos, kor: cleanKor(w.kor), eng: w.eng, ex: w.ex, e: w.e || null });
+                 u, i, w: w.w, pos: w.pos, kor: cleanKor(w.kor), def: w.def || '', ex: w.ex, e: w.e || null });
     });
   }
 })();
@@ -50,22 +50,29 @@ function defState(){ return {
   mini: { bal:0, mem:0, spd:0 },   // best scores
   miniSinceTest: 0,          // 마지막 깜짝시험 이후 미니게임 횟수 (3회마다 시험 필수)
   quest: null,
-  cfg: { uFrom:1, uTo:30, dailyNew:6, qPer:12, introEach:true, order:'seq', reviewN:3, testQ:30, testMin:20 },
+  cfg: { uFrom:1, uTo:30, dailyNew:6, qPer:12, introEach:true, order:'seq', reviewN:3, testQ:30, testMin:20, unitPick:0 },
 }; }
 function load(){ try { S = JSON.parse(localStorage.getItem(SKEY)) || defState(); } catch(e){ S = defState(); }
   const d = defState();
   S.cfg = Object.assign(d.cfg, S.cfg || {});
   S.stickers = S.stickers || {}; S.mini = Object.assign(d.mini, S.mini || {});
   S.miniSinceTest = Math.max(0, parseInt(S.miniSinceTest, 10) || 0); }
-let _syncShown = null;
+let _syncShown = null, _pendingSave = false, _cloudReady = false;
+function hasProgress(st){
+  return !!(st && (Object.keys(st.words || {}).length || st.sessions || st.stars || Object.keys(st.stickers || {}).length));
+}
 function save(){
   S._ts = Date.now();
   try { localStorage.setItem(SKEY, JSON.stringify(S)); } catch(e){}
-  if (window.Cloud && Cloud.enabled && !PROFILE.guest && Cloud.user){
-    Cloud.saveProgress(PROFILE.pid, 'wordKingdom', S);
-    const dot = document.getElementById('sync-dot');
-    dot.classList.remove('hidden');
-    clearTimeout(_syncShown); _syncShown = setTimeout(() => dot.classList.add('hidden'), 1500);
+  if (window.Cloud && Cloud.enabled && !PROFILE.guest){
+    if (Cloud.user && _cloudReady){
+      Cloud.saveProgress(PROFILE.pid, 'wordKingdom', S);
+      const dot = document.getElementById('sync-dot');
+      dot.classList.remove('hidden');
+      clearTimeout(_syncShown); _syncShown = setTimeout(() => dot.classList.add('hidden'), 1500);
+    } else {
+      _pendingSave = true; // 로그인/클라우드 확인 전 저장은 확인 후 올린다
+    }
   }
 }
 function today(){ const d = new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
@@ -83,6 +90,13 @@ function streak(){
 function unitWords(u){ return ALL.filter(w => w.u === u); }
 function todayUnit(){
   const d = dayRec();
+  const pick = Math.max(0, parseInt(S.cfg.unitPick, 10) || 0);
+  if (pick >= 1 && pick <= 30){
+    // 관리자가 유닛을 직접 선택: 그 유닛에 계속 머무르고, 자동 진행은 멈춘다
+    if (d.unit !== pick){ d.unit = pick; d.forced = 1; d.udone = {}; d.advDone = false; }
+    return pick;
+  }
+  if (d.forced){ delete d.forced; d.unit = 0; d.udone = {}; d.advDone = false; } // 자동으로 복귀 → 다시 계산
   if (d.unit && d.unit >= S.cfg.uFrom && d.unit <= S.cfg.uTo) return d.unit;
   let u0 = null;
   for (let u = S.cfg.uFrom; u <= S.cfg.uTo; u++){
@@ -119,6 +133,12 @@ function playWord(k){
     const u = new SpeechSynthesisUtterance(w.w); u.lang = 'en-US'; u.rate = .85;
     speechSynthesis.cancel(); speechSynthesis.speak(u);
   }
+}
+function speakEn(txt){
+  if (!txt || !window.speechSynthesis) return;
+  try { if (curAudio) curAudio.pause(); } catch(e){}
+  const u = new SpeechSynthesisUtterance(txt); u.lang = 'en-US'; u.rate = .8;
+  speechSynthesis.cancel(); speechSynthesis.speak(u);
 }
 function tone(freq, t0, dur, type, vol){
   const c = ac(), o = c.createOscillator(), g = c.createGain();
@@ -345,8 +365,8 @@ function pickSession(){
 function seenPool(){ return pool().filter(w => wRec(w.k).seen > 0); }
 function modeFor(w){
   const lv = wRec(w.k).lv, hasE = !!w.e;
-  if (lv <= 1) return hasE ? 'w2p' : 'w2k';
-  if (lv === 2) return hasE ? 'p2w' : 'k2w';
+  if (lv <= 1) return hasE ? 'w2p' : 'w2d';
+  if (lv === 2) return hasE ? 'p2w' : 'd2w';
   if (lv === 3) return hasE ? 'l2p' : 'l2w';
   return 'spell';
 }
@@ -368,7 +388,7 @@ async function startSession(){
   Q = { queue: words.map(w => ({k: w.k})), idx: 0, correct: 0, stars0: S.stars,
         newSet: new Set(words.filter(w => wRec(w.k).seen === 0).map(w => w.k)),
         introDone: new Set(), comboN: 0, total: words.length, isTest: false,
-        isDaily, unit: dailyU };
+        isDaily, unit: dailyU, batch: [] };
   showScreen('scr-game');
   document.getElementById('r-again').onclick = startSession;
   document.getElementById('g-timer').classList.add('hidden');
@@ -411,7 +431,12 @@ function confirmQuit(){
 /* ---------- question flow ---------- */
 function nextQ(){
   updateProg();
-  if (Q.idx >= Q.queue.length){ endSession(false); return; }
+  // 5단어를 배울 때마다 줄긋기 게임 (시험 제외)
+  if (!Q.isTest && Q.batch && Q.batch.length >= 5){ renderMatch(Q.batch.splice(0, 5)); return; }
+  if (Q.idx >= Q.queue.length){
+    if (!Q.isTest && Q.batch && Q.batch.length >= 2){ renderMatch(Q.batch.splice(0, Q.batch.length)); return; }
+    endSession(false); return;
+  }
   const k = Q.queue[Q.idx].k, w = BYKEY[k];
   if (Q.newSet.has(k) && !Q.introDone.has(k) && S.cfg.introEach){
     renderIntro(w); return;
@@ -427,28 +452,46 @@ function area(){ return document.getElementById('g-area'); }
 
 function renderIntro(w){
   Q.introDone.add(w.k);
+  const ex = w.ex ? w.ex.split('\n')[0] : '';
   area().innerHTML = `
     <div class="intro-card">
       <div class="intro-emoji">${w.e || '🌟'}</div>
       <div class="intro-word">${w.w}</div>
-      <div class="intro-kor">${w.kor}</div>
-      ${w.ex ? `<div class="intro-ex">${w.ex.split('\n')[0]}</div>` : ''}
+      <div class="intro-pos">${w.pos || ''}</div>
+      ${ex ? `<div class="intro-ex">${ex}</div>` : ''}
       <div style="display:flex; gap:3vmin; align-items:center; margin-top:1vmin;">
         <button class="speaker" onclick="playWord('${w.k}')">🔊</button>
-        <button class="big-btn" style="font-size:4vmin; padding:1.8vmin 6vmin;" onclick="nextQ()">알겠어! ✨</button>
+        ${ex ? `<button class="speaker" title="예문 듣기" onclick="speakEn(BYKEY['${w.k}'].ex)">📢</button>` : ''}
+        <button class="big-btn" style="font-size:4vmin; padding:1.8vmin 6vmin;" onclick="renderIntroDef('${w.k}')">다음 ➡️</button>
       </div>
     </div>`;
   playWord(w.k);
 }
+function renderIntroDef(k){
+  const w = BYKEY[k];
+  area().innerHTML = `
+    <div class="intro-card">
+      <div class="intro-emoji" style="font-size:9vmin;">${w.e || '🌟'}</div>
+      <div class="intro-word" style="font-size:7.5vmin;">${w.w}</div>
+      <div class="intro-deflabel">What does it mean?</div>
+      <div class="intro-def">"${w.def}"</div>
+      <div style="display:flex; gap:3vmin; align-items:center; margin-top:1vmin;">
+        <button class="speaker" onclick="playWord('${w.k}')">🔊</button>
+        <button class="speaker" title="뜻 듣기" onclick="speakEn(BYKEY['${w.k}'].def)">📢</button>
+        <button class="big-btn" style="font-size:4vmin; padding:1.8vmin 6vmin;" onclick="nextQ()">알겠어! ✨</button>
+      </div>
+    </div>`;
+  speakEn(w.def);
+}
 
 function distractors(w, n){
-  const p = pool().filter(x => x.k !== w.k && x.kor !== w.kor);
+  const p = pool().filter(x => x.k !== w.k && x.def !== w.def);
   const sameU = p.filter(x => x.u === w.u), rest = p.filter(x => x.u !== w.u);
   const cand = [...sameU.sort(()=>Math.random()-.5), ...rest.sort(()=>Math.random()-.5)];
   const out = [], seen = new Set([w.e, null]);
   for (const c of cand){
     if (out.length >= n) break;
-    if (out.some(o => o.kor === c.kor || o.w === c.w)) continue;
+    if (out.some(o => o.def === c.def || o.w === c.w)) continue;
     if (w.e && (!c.e || seen.has(c.e))) { if (['w2p','l2p'].includes(curMode)) continue; }
     out.push(c); if (c.e) seen.add(c.e);
   }
@@ -465,14 +508,15 @@ function renderChoice(w, mode){
   if (mode === 'w2p'){ instr = '어떤 그림일까? 그림을 골라봐!';
     promptHtml = `<div class="q-main">${w.w}</div><button class="speaker" onclick="playWord('${w.k}')">🔊</button>`;
     optHtml = o => `<span class="big-e">${o.e || '❓'}</span>`;
-  } else if (mode === 'w2k'){ instr = '무슨 뜻일까? 골라봐!';
+  } else if (mode === 'w2d'){ instr = '무슨 뜻일까? 영어 설명을 골라봐!';
     promptHtml = `<div class="q-main">${w.w}</div><button class="speaker" onclick="playWord('${w.k}')">🔊</button>`;
-    optHtml = o => `<span class="opt-kor" style="font-size:4.2vmin;">${o.kor}</span>`;
+    optHtml = o => `<span class="opt-def">${o.def}</span>`;
   } else if (mode === 'p2w'){ instr = '이 그림은 영어로 뭘까?';
     promptHtml = `<div class="q-main emoji">${w.e}</div>`;
     optHtml = o => `<span>${o.w}</span>`;
-  } else if (mode === 'k2w'){ instr = '이 뜻을 가진 영어 단어는?';
-    promptHtml = `<div class="q-main" style="font-size:5.5vmin;">${w.kor}</div>`;
+  } else if (mode === 'd2w'){ instr = '이 설명에 맞는 영어 단어는?';
+    promptHtml = `<div class="q-main" style="font-size:3.6vmin; line-height:1.4; max-width:70vmin;">"${w.def}"</div>
+      <button class="speaker" onclick="speakEn(BYKEY['${w.k}'].def)">📢</button>`;
     optHtml = o => `<span>${o.w}</span>`;
   } else if (mode === 'l2p'){ instr = '잘 듣고 그림을 골라봐!';
     promptHtml = `<button class="speaker big" onclick="playWord('${w.k}')">🔊</button>`;
@@ -485,7 +529,7 @@ function renderChoice(w, mode){
     <div class="q-card"><div class="q-instr">${instr}</div>${promptHtml}</div>
     <div class="opts">${opts.map((o,i) =>
       `<button class="opt" data-i="${i}" onclick="pick(this, ${i === ansIdx}, '${w.k}')">${optHtml(o)}</button>`).join('')}</div>`;
-  if (mode === 'w2p' || mode === 'w2k' || mode === 'l2p' || mode === 'l2w') playWord(w.k);
+  if (mode === 'w2p' || mode === 'w2d' || mode === 'l2p' || mode === 'l2w') playWord(w.k);
 }
 
 let lock = false;
@@ -518,6 +562,7 @@ function markDaily(k){
 function onCorrect(el, k){
   const r = wRec(k); r.seen++; r.ok++; r.lv = Math.min(5, r.lv + 1);
   markDaily(k);
+  if (!Q.isTest && Q.batch && !Q.batch.includes(k)) Q.batch.push(k);
   Q.comboN++; Q.correct++;
   let gain = 10;
   if (Q.comboN >= 3){ gain += 5; comboShow(); }
@@ -556,6 +601,61 @@ function comboShow(){
   setTimeout(() => t.classList.remove('show'), 900);
 }
 
+/* ---------- 🖍️ 줄긋기 게임 (5단어마다) ---------- */
+let MT = null;
+function renderMatch(keys){
+  const words = keys.map(k => BYKEY[k]).filter(Boolean);
+  if (!words.length){ nextQ(); return; }
+  MT = { sel: null, left: words.length };
+  const order = [...words].sort(() => Math.random()-.5);
+  area().innerHTML = `
+    <div class="q-card" style="padding:1.6vmin 2vmin;"><div class="q-instr">🖍️ 단어와 영어 뜻을 선으로 이어봐!</div></div>
+    <div class="match-wrap" id="mt-wrap">
+      <svg class="mt-lines" id="mt-lines"></svg>
+      <div class="match-col">${words.map(w =>
+        `<button class="mt-item mt-w" id="mtw-${w.k}" onclick="mtPick('w','${w.k}')">${w.e ? w.e + ' ' : ''}${w.w}</button>`).join('')}</div>
+      <div class="match-col">${order.map(w =>
+        `<button class="mt-item mt-d" id="mtd-${w.k}" onclick="mtPick('d','${w.k}')">${w.def}</button>`).join('')}</div>
+    </div>`;
+  sfxPop();
+}
+function mtPick(side, k){
+  if (!MT) return;
+  const el = document.getElementById((side === 'w' ? 'mtw-' : 'mtd-') + k);
+  if (!el || el.classList.contains('matched')) return;
+  if (side === 'w'){
+    MT.sel = k; sfxPop(); playWord(k);
+    document.querySelectorAll('.mt-w').forEach(e => e.classList.toggle('sel', e.id === 'mtw-' + k));
+    return;
+  }
+  if (!MT.sel){ speakEn(BYKEY[k] && BYKEY[k].def); return; }
+  const wk = MT.sel;
+  if (wk === k){
+    MT.sel = null;
+    const a = document.getElementById('mtw-' + k);
+    a.classList.remove('sel'); a.classList.add('matched'); el.classList.add('matched');
+    mtLine(a, el);
+    sfxOk();
+    S.stars += 4; dayRec().stars += 4; questRec().stars += 4;
+    document.getElementById('g-stars').textContent = S.stars;
+    const r = el.getBoundingClientRect(); burst(r.left + r.width/2, r.top + r.height/2, false);
+    MT.left--;
+    if (MT.left <= 0){ save(); setTimeout(() => { MT = null; sfxFanfare(); nextQ(); }, 1000); }
+  } else {
+    sfxNo();
+    el.classList.add('wrongpick'); setTimeout(() => el.classList.remove('wrongpick'), 450);
+  }
+}
+function mtLine(a, b){
+  const wrap = document.getElementById('mt-wrap'), svg = document.getElementById('mt-lines');
+  if (!wrap || !svg) return;
+  const wr = wrap.getBoundingClientRect(), ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+  const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  ln.setAttribute('x1', ra.right - wr.left); ln.setAttribute('y1', ra.top + ra.height/2 - wr.top);
+  ln.setAttribute('x2', rb.left - wr.left);  ln.setAttribute('y2', rb.top + rb.height/2 - wr.top);
+  svg.appendChild(ln);
+}
+
 /* ---------- spelling ---------- */
 function renderSpell(w){
   curMode = 'spell';
@@ -569,9 +669,10 @@ function renderSpell(w){
       <div class="q-instr">글자를 순서대로 눌러 단어를 완성해봐!</div>
       <div style="display:flex; align-items:center; gap:3vmin;">
         <div class="q-main emoji" style="font-size:11vmin;">${w.e || '🌟'}</div>
-        <div>
-          <div class="q-sub" style="font-size:4vmin; font-weight:800;">${w.kor}</div>
+        <div style="max-width:52vmin;">
+          <div class="q-sub" style="font-size:2.9vmin; font-weight:700; color:#3a7a58; line-height:1.35;">"${w.def}"</div>
           <button class="speaker" style="margin-top:1vmin;" onclick="playWord('${w.k}')">🔊</button>
+          <button class="speaker" style="margin-top:1vmin;" onclick="speakEn(BYKEY['${w.k}'].def)">📢</button>
         </div>
       </div>
     </div>
@@ -613,6 +714,7 @@ function renderSpell(w){
 function onCorrectSpell(k, wrongTries, rect){
   const r = wRec(k); r.seen++;
   markDaily(k);
+  if (!Q.isTest && Q.batch && !Q.batch.includes(k)) Q.batch.push(k);
   const clean = wrongTries <= 1;
   if (clean){ r.ok++; r.lv = Math.min(5, r.lv + 1); } // gentle
   if (Q.isTest && !clean){
@@ -823,10 +925,16 @@ function renderParent(){
     for (let v = from; v <= to; v += (step||1)) h += `<option value="${v}" ${v==val?'selected':''}>${v}</option>`;
     return h + '</select>'; };
   document.getElementById('p-body').innerHTML = `
+    <div class="p-sec"><h3>🎯 학습 유닛 선택</h3>
+      <div class="p-row"><label><input type="radio" name="cfg-upick" value="0" ${!c.unitPick ? 'checked' : ''}> <b>자동 진행</b> — Unit 1부터 매일 다음 유닛으로 넘어가요</label></div>
+      <div class="p-row"><label><input type="radio" name="cfg-upick" value="1" ${c.unitPick ? 'checked' : ''}> <b>직접 선택</b> —</label> ${selN('cfg-upicksel',1,30,c.unitPick || todayUnit())} 유닛에 <b>계속 머물러요</b> (자동 진행 멈춤)</div>
+      <div class="p-row" style="font-size:2.6vmin;color:#a58bb8;">${c.unitPick
+        ? `📌 지금 <b>Unit ${c.unitPick}</b>에 머무는 중이에요. 자동 진행은 멈춰 있고, "자동 진행"으로 바꾸면 이어서 진행돼요.`
+        : `▶️ 자동 진행 중 — 오늘의 유닛: <b>Unit ${todayUnit()}</b>${advDoneToday() ? ' (완료 🎉)' : ''}`}</div>
+    </div>
     <div class="p-sec"><h3>📚 학습 범위와 분량</h3>
       <div class="p-row">유닛 ${selN('cfg-uf',1,30,c.uFrom)} 부터 ${selN('cfg-ut',1,30,c.uTo)} 까지</div>
-      <div class="p-row" style="font-size:2.6vmin;color:#a58bb8;">🗺️ 하루 모험 분량은 <b>유닛 1개 전체(25단어)</b>예요. 오늘의 유닛을 다 끝내야 미니게임이 열립니다.
-        지금 오늘의 유닛: <b>Unit ${todayUnit()}</b>${advDoneToday() ? ' (완료 🎉)' : ''}</div>
+      <div class="p-row" style="font-size:2.6vmin;color:#a58bb8;">🗺️ 하루 모험 분량은 <b>유닛 1개 전체(25단어)</b>예요. 오늘의 유닛을 다 끝내야 미니게임이 열립니다.</div>
       <div class="p-row">복습 모험 문제 수 ${selN('cfg-q',6,30,c.qPer)} 개 <span style="font-size:2.4vmin;color:#a58bb8;">(오늘의 유닛을 끝낸 뒤 추가 모험)</span></div>
       <div class="p-row">복습 모험 속 복습 단어 ${selN('cfg-rev',0,10,c.reviewN)} 개</div>
       <div class="p-row"><label><input type="checkbox" id="cfg-intro" ${c.introEach?'checked':''}> 새 단어는 먼저 카드로 보여주기</label></div>
@@ -865,6 +973,9 @@ function saveCfg(){
   let uf = +g('cfg-uf').value, ut = +g('cfg-ut').value;
   if (uf > ut) [uf, ut] = [ut, uf];
   S.cfg.uFrom = uf; S.cfg.uTo = ut;
+  const pickOn = document.querySelector('input[name="cfg-upick"]:checked');
+  S.cfg.unitPick = (pickOn && pickOn.value === '1') ? +g('cfg-upicksel').value : 0;
+  todayUnit(); // 오늘 기록에 즉시 반영
   S.cfg.qPer = +g('cfg-q').value;
   S.cfg.reviewN = +g('cfg-rev').value;
   S.cfg.testQ = +g('cfg-tq').value; S.cfg.testMin = +g('cfg-tm').value;
@@ -1041,7 +1152,7 @@ async function startMemory(){
   showScreen('scr-mini');
   document.getElementById('m-timer').classList.add('hidden');
   document.getElementById('m-stars').textContent = S.stars;
-  document.getElementById('mini-instr').textContent = '🃏 단어와 그림 짝을 찾아봐!';
+  document.getElementById('mini-instr').textContent = '🃏 단어와 그림 짝을 찾아봐! (6번째부터는 틀리면 별 -3 💔)';
   const cards = [];
   words.forEach(w => { cards.push({k:w.k, face:w.w, kind:'w'}); cards.push({k:w.k, face:w.e, kind:'e'}); });
   cards.sort(() => Math.random()-.5);
@@ -1073,6 +1184,13 @@ function memFlip(el, c){
     }
   } else {
     MG.lockM = true; sfxNo();
+    // 5번 이상 뒤집은 뒤부터는 틀리면 별 -3
+    if (MG.flips > 5){
+      mgStars(-3);
+      const mi = document.getElementById('mini-instr'), keep = mi.textContent;
+      mi.textContent = '💔 -3 ⭐';
+      setTimeout(() => { mi.textContent = keep; }, 800);
+    }
     setTimeout(() => { f.el.classList.remove('flip'); el.classList.remove('flip'); MG.lockM = false; }, 900);
   }
 }
@@ -1131,7 +1249,7 @@ function speedQ(){
    도움말 (처음 오면 자동으로 보여줘요)
    ================================================================ */
 const HELP_PAGES = [
-  {e:'🗺️', t:'모험을 떠나요!', d:'하루에 한 유닛(25단어)씩 모험을 해요.\n그림 고르기, 듣기, 스펠링 맞히기까지!\n"모험 시작" 버튼을 눌러 봐요.'},
+  {e:'🗺️', t:'모험을 떠나요!', d:'하루에 한 유닛(25단어)씩 모험을 해요.\n영어 예문과 영어 뜻으로 배우고,\n5단어마다 🖍️ 줄긋기 게임도 나와요!'},
   {e:'🎈', t:'미니게임이 기다려요', d:'오늘의 모험을 다 끝내면\n풍선 팡팡 · 짝 맞추기 · 스피드 퀴즈가 열려요!\n먼저 공부, 그다음 놀이! 😊'},
   {e:'🎯', t:'깜짝 시험', d:'미니게임을 3번 하고 나면\n깜짝 시험에 도전해야 미니게임이 다시 열려요.\n배운 단어에서만 나오니까 걱정 마요!'},
   {e:'⭐', t:'별을 모아요', d:'정답을 맞히면 별 +10, 연속으로 맞히면 콤보 보너스!\n틀리면 별이 5개 도망가요.\n별을 모으면 유니콘 친구들이 찾아와요 🦄'},
@@ -1168,22 +1286,62 @@ if (!S.helpSeen) setTimeout(openHelp, 700);
     if (!u || u.uid !== PROFILE.uid) return;
     try {
       const c = await Cloud.loadProgress(PROFILE.pid, 'wordKingdom');
-      if (c && c.state && (c.updatedAt || 0) > (S._ts || 0)){
+      const localEmpty = !hasProgress(S);
+      // 이 기기의 기록이 비어 있으면 시간과 상관없이 무조건 클라우드 기록을 가져온다
+      // (새 기기에서 첫 화면 저장이 클라우드 기록을 덮어쓰던 버그 수정)
+      if (c && c.state && hasProgress(c.state) && (localEmpty || (c.updatedAt || 0) > (S._ts || 0))){
         S = c.state;
         const d = defState();
         S.cfg = Object.assign(d.cfg, S.cfg || {});
         S.stickers = S.stickers || {}; S.mini = Object.assign(d.mini, S.mini || {});
+        S.miniSinceTest = Math.max(0, parseInt(S.miniSinceTest, 10) || 0);
         try { localStorage.setItem(SKEY, JSON.stringify(S)); } catch(e){}
+        _pendingSave = false;
+        _cloudReady = true;
         renderHome();
-      } else if (S._ts) {
-        Cloud.saveProgressNow(PROFILE.pid, 'wordKingdom', S);
+      } else {
+        _cloudReady = true;
+        // 클라우드가 비어 있는데 이 기기에 게스트(로그인 전) 기록이 있으면 가져오기 제안
+        if ((!c || !hasProgress(c && c.state)) && localEmpty){
+          const g = findGuestSave();
+          if (g){
+            askModal('이 기기에 로그인 전(게스트) 학습 기록이 있어요!\n⭐' + (g.data.stars||0) + ' · 모험 ' + (g.data.sessions||0) + '회\n이 프로필로 가져올까요?', () => {
+              S = g.data;
+              const d = defState();
+              S.cfg = Object.assign(d.cfg, S.cfg || {});
+              S.stickers = S.stickers || {}; S.mini = Object.assign(d.mini, S.mini || {});
+              save(); renderHome();
+            });
+          }
+        }
+        if (_pendingSave || hasProgress(S)){
+          _pendingSave = false;
+          Cloud.saveProgressNow(PROFILE.pid, 'wordKingdom', S);
+        }
       }
-    } catch(e){ console.warn(e); }
+    } catch(e){ console.warn(e); _cloudReady = true; }
   });
-  addEventListener('beforeunload', () => {
-    if (Cloud.user) Cloud.saveProgressNow(PROFILE.pid, 'wordKingdom', S);
-  });
+  // 화면을 벗어날 때 즉시 저장 (모바일에서 debounce 저장이 유실되는 것 방지)
+  const flush = () => { if (Cloud.user && _cloudReady && hasProgress(S)) Cloud.saveProgressNow(PROFILE.pid, 'wordKingdom', S); };
+  addEventListener('beforeunload', flush);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
 })();
+function findGuestSave(){
+  let best = null;
+  try {
+    for (let i = 0; i < localStorage.length; i++){
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith('wk_v3_') || key === SKEY) continue;
+      const pid = key.slice(6);
+      if (pid !== 'local' && pid[0] !== 'g') continue; // 게스트 프로필만
+      const d = JSON.parse(localStorage.getItem(key));
+      if (!hasProgress(d)) continue;
+      const score = (d.stars || 0) + (d.sessions || 0) * 100;
+      if (!best || score > best.score) best = { key, data: d, score };
+    }
+  } catch(e){}
+  return best;
+}
 
 // 첫 화면에서 오늘의 유닛 오디오 미리 로딩 (백그라운드)
 setTimeout(() => { try { ensureAudioUnit(todayUnit()); } catch(e){} }, 1200);
