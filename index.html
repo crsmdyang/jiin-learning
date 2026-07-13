@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦄</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>지인이의 배움 나라 🏰</title>
+<link href="https://fonts.googleapis.com/css2?family=Jua&family=Gaegu:wght@700&display=swap" rel="stylesheet">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none; }
+html,body { height:100%; }
+body { font-family:'Jua','Apple SD Gothic Neo',sans-serif;
+  background:linear-gradient(160deg,#ffd6ec,#e7d4ff 40%,#cfe4ff 80%,#ffeef8); background-size:200% 200%;
+  animation:bg 20s ease infinite; overflow:hidden; }
+@keyframes bg { 0%,100%{background-position:0 0} 50%{background-position:100% 100%} }
+#deco { position:fixed; inset:0; pointer-events:none; overflow:hidden; z-index:0; }
+.fl { position:absolute; animation:up linear infinite; opacity:.45; }
+@keyframes up { from{transform:translateY(106vh) rotate(0)} to{transform:translateY(-8vh) rotate(360deg)} }
+#wrap { position:relative; z-index:1; height:100%; display:flex; flex-direction:column; align-items:center;
+  justify-content:center; gap:3vmin; padding:3vmin; overflow-y:auto; }
+.card { background:rgba(255,255,255,.92); border-radius:4vmin; padding:4vmin 5vmin;
+  box-shadow:0 8px 30px rgba(160,48,143,.22); width:min(92vw,64vmin); text-align:center; }
+h1.logo { font-size:6.5vmin; color:#a0308f; text-shadow:0 2px 0 #fff; }
+.tag { font-size:3vmin; color:#a97fc4; margin-top:.5vmin; }
+input.f { width:100%; font-family:inherit; font-size:3.6vmin; padding:1.8vmin 2.4vmin; margin-top:1.8vmin;
+  border:3px solid #ecd4f2; border-radius:2.4vmin; background:#fffafd; color:#5a2d82; outline:none; }
+input.f:focus { border-color:#d38fe0; }
+.btn { border:none; cursor:pointer; font-family:inherit; font-weight:400; color:#fff;
+  background:linear-gradient(135deg,#ff6fb7,#b06ef5); border-radius:99px; padding:1.8vmin 6vmin;
+  font-size:3.8vmin; margin-top:2.4vmin; box-shadow:0 5px 0 #c34e9b; transition:transform .1s; }
+.btn:active { transform:translateY(4px); box-shadow:0 1px 0 #c34e9b; }
+.btn.ghost { background:none; color:#a06cc0; box-shadow:none; font-size:3vmin; padding:1vmin 3vmin; }
+.msg { font-size:2.8vmin; color:#d4488f; min-height:3.6vmin; margin-top:1.6vmin; white-space:pre-line; }
+.hidden { display:none !important; }
+
+/* profiles */
+.pf-grid { display:flex; flex-wrap:wrap; gap:3vmin; justify-content:center; margin-top:3vmin; }
+.pf { cursor:pointer; text-align:center; transition:transform .15s; }
+.pf:active { transform:scale(.93); }
+.pf .av { width:17vmin; height:17vmin; border-radius:3.5vmin; background:linear-gradient(135deg,#fff0fa,#f3e5ff);
+  display:flex; align-items:center; justify-content:center; font-size:10vmin;
+  box-shadow:0 5px 14px rgba(160,48,143,.2); border:3px solid #fff; }
+.pf.add .av { background:rgba(255,255,255,.5); color:#c9a2dd; font-size:8vmin; border-style:dashed; border-color:#d9b8e8; }
+.pf .nm { font-size:3.2vmin; color:#7a4b9d; margin-top:1vmin; }
+
+/* program grid */
+#hub { width:min(96vw,150vmin); }
+.hub-top { display:flex; align-items:center; gap:2vmin; margin-bottom:2.5vmin; }
+.hub-hello { flex:1; font-size:4.5vmin; color:#8b3fa8; text-align:left; }
+.pill { background:rgba(255,255,255,.85); border:none; cursor:pointer; font-family:inherit;
+  border-radius:99px; padding:1.2vmin 3vmin; font-size:2.9vmin; color:#8b3fa8;
+  box-shadow:0 3px 8px rgba(160,48,143,.16); }
+.prog-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(34vmin,1fr)); gap:2.6vmin; }
+.prog { background:rgba(255,255,255,.93); border-radius:3.5vmin; padding:3vmin; cursor:pointer;
+  box-shadow:0 6px 18px rgba(160,48,143,.16); text-align:center; transition:transform .15s; position:relative; }
+.prog:active { transform:scale(.96); }
+.prog .ic { font-size:11vmin; }
+.prog .tt { font-size:3.8vmin; color:#5a2d82; margin-top:1vmin; }
+.prog .dd { font-size:2.6vmin; color:#a97fc4; margin-top:.5vmin; line-height:1.4; }
+.prog.soon { opacity:.55; cursor:default; }
+.prog.soon::after { content:'준비 중'; position:absolute; top:2vmin; right:2vmin; background:#e6d6f0;
+  color:#8b6aa5; font-size:2.2vmin; padding:.5vmin 1.6vmin; border-radius:99px; }
+.guest-bar { background:#fff4d6; color:#9a7317; font-size:2.7vmin; padding:1.4vmin 3vmin;
+  border-radius:2vmin; margin-bottom:2.4vmin; }
+avatar-pick { display:block; }
+.avlist { display:flex; flex-wrap:wrap; gap:1.6vmin; justify-content:center; margin-top:2vmin; }
+.avopt { font-size:7vmin; cursor:pointer; padding:1vmin; border-radius:2vmin; border:3px solid transparent; }
+.avopt.sel { border-color:#ff8ad2; background:#fff0fa; }
+</style>
+</head>
+<body>
+<div id="deco"></div>
+<div id="wrap">
+
+  <!-- 로그인 / 가입 -->
+  <div class="card" id="v-auth">
+    <h1 class="logo">🏰 지인이의 배움 나라</h1>
+    <div class="tag">우리 아이 놀이 학습 왕국</div>
+    <div id="auth-forms">
+      <input class="f" id="a-email" type="email" placeholder="부모님 이메일" autocomplete="username">
+      <input class="f" id="a-pw" type="password" placeholder="비밀번호 (6자 이상)" autocomplete="current-password">
+      <div class="msg" id="a-msg"></div>
+      <button class="btn" id="a-login">로그인</button><br>
+      <button class="btn ghost" id="a-signup">처음이에요 — 가입하기</button>
+      <button class="btn ghost" id="a-forgot">비밀번호를 잊었어요</button><br>
+      <button class="btn ghost" id="a-guest">로그인 없이 이 기기에서만 하기</button>
+    </div>
+  </div>
+
+  <!-- 프로필 선택 -->
+  <div class="card hidden" id="v-profiles">
+    <h1 class="logo" style="font-size:5vmin;">누가 공부할까요?</h1>
+    <div class="pf-grid" id="pf-grid"></div>
+    <div class="msg" id="p-msg"></div>
+    <button class="btn ghost" id="p-logout">로그아웃</button>
+  </div>
+
+  <!-- 프로필 만들기 -->
+  <div class="card hidden" id="v-newpf">
+    <h1 class="logo" style="font-size:5vmin;">새 프로필 만들기</h1>
+    <input class="f" id="np-name" maxlength="10" placeholder="아이 이름 (예: 지인)">
+    <div class="avlist" id="np-avs"></div>
+    <div class="msg" id="np-msg"></div>
+    <button class="btn" id="np-ok">만들기 ✨</button>
+    <button class="btn ghost" id="np-cancel">돌아가기</button>
+  </div>
+
+  <!-- 프로그램 허브 -->
+  <div id="hub" class="hidden">
+    <div class="guest-bar hidden" id="guest-bar">👋 게스트 모드 — 진도가 이 기기에만 저장돼요. 로그인하면 어디서든 이어서 할 수 있어요!</div>
+    <div class="hub-top">
+      <div class="hub-hello" id="hub-hello">👧 지인, 어서 와!</div>
+      <button class="pill" id="hub-switch">프로필 바꾸기</button>
+      <button class="pill" id="hub-logout">로그아웃</button>
+    </div>
+    <div class="prog-grid" id="prog-grid"></div>
+  </div>
+
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="js/firebase-config.js"></script>
+<script src="js/cloud.js"></script>
+<script>
+"use strict";
+/* ---------- 프로그램 목록 (새 프로그램은 여기에 추가) ---------- */
+const PROGRAMS = [
+  { id:'wordKingdom', icon:'🦄', title:'단어 왕국', desc:'Bricks Vocabulary 2300\n원어민 발음으로 배우는 영단어', url:'wordkingdom/index.html', ready:true },
+  { id:'mathLand',   icon:'🧮', title:'수학 나라', desc:'재미있는 연산 모험', url:'#', ready:false },
+  { id:'readingSea', icon:'📖', title:'읽기 바다', desc:'영어 동화 읽기', url:'#', ready:false },
+];
+const AVATARS = ['👧','👸','🦄','🐰','🐱','🦊','🐻','🐥','🦋','🌸','⭐','🍓'];
+
+/* ---------- deco ---------- */
+(function(){ const g = ['✨','⭐','🌸','💖','🦄','🌈','👑','🫧'], host = document.getElementById('deco');
+  for (let i=0;i<14;i++){ const s=document.createElement('div'); s.className='fl'; s.textContent=g[i%g.length];
+    s.style.left=Math.random()*96+'vw'; s.style.fontSize=(2+Math.random()*3)+'vmin';
+    s.style.animationDuration=(14+Math.random()*16)+'s'; s.style.animationDelay=(-Math.random()*20)+'s';
+    host.appendChild(s);} })();
+
+const $ = id => document.getElementById(id);
+function view(id){ ['v-auth','v-profiles','v-newpf','hub'].forEach(v => $(v).classList.add('hidden'));
+  $(id).classList.remove('hidden'); }
+
+let guestMode = false;
+
+/* ---------- guest profiles (localStorage) ---------- */
+function guestProfiles(){ try { return JSON.parse(localStorage.getItem('wp_guest_profiles')) || []; } catch(e){ return []; } }
+function saveGuestProfiles(l){ localStorage.setItem('wp_guest_profiles', JSON.stringify(l)); }
+
+/* ---------- auth flow ---------- */
+function boot(){
+  if (!Cloud.enabled){
+    // Firebase 미설정 → 자동 게스트
+    guestMode = true;
+    showProfiles();
+    return;
+  }
+  Cloud.onAuth(u => {
+    if (u){ guestMode = false; showProfiles(); }
+    else if (!guestMode) view('v-auth');
+  });
+}
+$('a-login').onclick = async () => {
+  if (!Cloud.enabled){ $('a-msg').textContent = '아직 서버 설정 전이에요. 게스트 모드를 이용해 주세요.'; return; }
+  $('a-msg').textContent = '로그인 중…';
+  try { await Cloud.login($('a-email').value.trim(), $('a-pw').value); $('a-msg').textContent=''; }
+  catch(e){ $('a-msg').textContent = Cloud.errMsg(e); }
+};
+$('a-signup').onclick = async () => {
+  if (!Cloud.enabled){ $('a-msg').textContent = '아직 서버 설정 전이에요. 게스트 모드를 이용해 주세요.'; return; }
+  $('a-msg').textContent = '가입 중…';
+  try { await Cloud.signup($('a-email').value.trim(), $('a-pw').value); $('a-msg').textContent=''; }
+  catch(e){ $('a-msg').textContent = Cloud.errMsg(e); }
+};
+$('a-forgot').onclick = async () => {
+  if (!Cloud.enabled) return;
+  const em = $('a-email').value.trim();
+  if (!em){ $('a-msg').textContent = '이메일을 먼저 입력해 주세요.'; return; }
+  try { await Cloud.resetPw(em); $('a-msg').textContent = '재설정 메일을 보냈어요! 메일함을 확인해 주세요.'; }
+  catch(e){ $('a-msg').textContent = Cloud.errMsg(e); }
+};
+$('a-guest').onclick = () => { guestMode = true; showProfiles(); };
+$('p-logout').onclick = $('hub-logout').onclick = async () => {
+  if (Cloud.enabled && Cloud.user) await Cloud.logout();
+  guestMode = false; localStorage.removeItem('wp_active_profile'); view('v-auth');
+};
+$('hub-switch').onclick = () => showProfiles();
+
+/* ---------- profiles ---------- */
+async function showProfiles(){
+  view('v-profiles');
+  const grid = $('pf-grid'); grid.innerHTML = '<div style="font-size:3vmin;color:#b092c5;">불러오는 중…</div>';
+  let list;
+  if (guestMode) list = guestProfiles();
+  else { try { list = await Cloud.listProfiles() || []; } catch(e){ $('p-msg').textContent = '프로필을 불러오지 못했어요: ' + Cloud.errMsg(e); list = []; } }
+  grid.innerHTML = '';
+  list.forEach(p => {
+    const el = document.createElement('div'); el.className = 'pf';
+    el.innerHTML = `<div class="av">${p.avatar}</div><div class="nm">${p.name}</div>`;
+    el.onclick = () => enter(p);
+    grid.appendChild(el);
+  });
+  if (list.length < 6){
+    const add = document.createElement('div'); add.className = 'pf add';
+    add.innerHTML = `<div class="av">＋</div><div class="nm">추가</div>`;
+    add.onclick = () => { renderAvatars(); view('v-newpf'); };
+    grid.appendChild(add);
+  }
+}
+let pickedAv = AVATARS[0];
+function renderAvatars(){
+  const host = $('np-avs'); host.innerHTML = '';
+  AVATARS.forEach(a => {
+    const el = document.createElement('div'); el.className = 'avopt' + (a === pickedAv ? ' sel' : '');
+    el.textContent = a;
+    el.onclick = () => { pickedAv = a; renderAvatars(); };
+    host.appendChild(el);
+  });
+}
+$('np-ok').onclick = async () => {
+  const name = $('np-name').value.trim();
+  if (!name){ $('np-msg').textContent = '이름을 입력해 주세요!'; return; }
+  if (guestMode){
+    const l = guestProfiles(); l.push({ id:'g'+Date.now(), name, avatar: pickedAv, created: Date.now() });
+    saveGuestProfiles(l);
+  } else {
+    try { await Cloud.addProfile(name, pickedAv); }
+    catch(e){ $('np-msg').textContent = Cloud.errMsg(e); return; }
+  }
+  showProfiles();
+};
+$('np-cancel').onclick = () => showProfiles();
+
+/* ---------- hub ---------- */
+function enter(p){
+  const active = { pid: p.id, name: p.name, avatar: p.avatar,
+                   uid: (!guestMode && Cloud.user) ? Cloud.user.uid : null, guest: guestMode };
+  Cloud.setActiveProfile(active);
+  $('hub-hello').textContent = `${p.avatar} ${p.name}, 어서 와!`;
+  $('guest-bar').classList.toggle('hidden', !guestMode);
+  const grid = $('prog-grid'); grid.innerHTML = '';
+  PROGRAMS.forEach(pr => {
+    const el = document.createElement('div'); el.className = 'prog' + (pr.ready ? '' : ' soon');
+    el.innerHTML = `<div class="ic">${pr.icon}</div><div class="tt">${pr.title}</div><div class="dd">${pr.desc.replace('\n','<br>')}</div>`;
+    if (pr.ready) el.onclick = () => location.href = pr.url;
+    grid.appendChild(el);
+  });
+  view('hub');
+}
+
+boot();
+</script>
+</body>
+</html>

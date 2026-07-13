@@ -1,0 +1,10 @@
+import { chromium } from 'playwright';
+const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const p = await b.newPage();
+const errs = [];
+p.on('pageerror', e => errs.push(e.message));
+await p.goto('http://localhost:8899/index.html'); await p.waitForTimeout(1200);
+await p.goto('http://localhost:8899/wordkingdom/index.html'); await p.waitForTimeout(1500);
+const ok = await p.evaluate(() => ({ words: ALL.length, title: document.getElementById('home-title-name').textContent }));
+console.log(JSON.stringify(ok), 'ERRORS:', errs.length ? errs : 'NONE');
+await b.close();
