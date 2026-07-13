@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦄</text></svg>">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>지인이의 배움 나라 🏰</title>
+<title>재미있는 배움나라 🏰</title>
 <link href="https://fonts.googleapis.com/css2?family=Jua&family=Gaegu:wght@700&display=swap" rel="stylesheet">
 <style>
 * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none; }
@@ -74,11 +74,11 @@ avatar-pick { display:block; }
 
   <!-- 로그인 / 가입 -->
   <div class="card" id="v-auth">
-    <h1 class="logo">🏰 지인이의 배움 나라</h1>
+    <h1 class="logo">🏰 재미있는 배움나라</h1>
     <div class="tag">우리 아이 놀이 학습 왕국</div>
     <div id="auth-forms">
       <input class="f" id="a-email" type="email" placeholder="부모님 이메일" autocomplete="username">
-      <input class="f" id="a-pw" type="password" placeholder="비밀번호 (6자 이상)" autocomplete="current-password">
+      <input class="f" id="a-pw" type="password" placeholder="비밀번호 (8자 이상, 영문+숫자)" autocomplete="current-password">
       <div class="msg" id="a-msg"></div>
       <button class="btn" id="a-login">로그인</button><br>
       <button class="btn ghost" id="a-signup">처음이에요 — 가입하기</button>
@@ -141,6 +141,9 @@ const AVATARS = ['👧','👸','🦄','🐰','🐱','🦊','🐻','🐥','🦋',
     host.appendChild(s);} })();
 
 const $ = id => document.getElementById(id);
+/* 보안: 사용자 입력을 HTML에 넣을 때는 항상 이스케이프 */
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
+  ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 function view(id){ ['v-auth','v-profiles','v-newpf','hub'].forEach(v => $(v).classList.add('hidden'));
   $(id).classList.remove('hidden'); }
 
@@ -171,8 +174,12 @@ $('a-login').onclick = async () => {
 };
 $('a-signup').onclick = async () => {
   if (!Cloud.enabled){ $('a-msg').textContent = '아직 서버 설정 전이에요. 게스트 모드를 이용해 주세요.'; return; }
+  const em = $('a-email').value.trim(), pw = $('a-pw').value;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)){ $('a-msg').textContent = '이메일 주소를 다시 확인해 주세요.'; return; }
+  if (pw.length < 8 || !/[0-9]/.test(pw) || !/[a-zA-Z]/.test(pw)){
+    $('a-msg').textContent = '비밀번호는 8자 이상, 영문과 숫자를 함께 써 주세요. (보안을 위해서예요!)'; return; }
   $('a-msg').textContent = '가입 중…';
-  try { await Cloud.signup($('a-email').value.trim(), $('a-pw').value); $('a-msg').textContent=''; }
+  try { await Cloud.signup(em, pw); $('a-msg').textContent=''; }
   catch(e){ $('a-msg').textContent = Cloud.errMsg(e); }
 };
 $('a-forgot').onclick = async () => {
@@ -199,7 +206,7 @@ async function showProfiles(){
   grid.innerHTML = '';
   list.forEach(p => {
     const el = document.createElement('div'); el.className = 'pf';
-    el.innerHTML = `<div class="av">${p.avatar}</div><div class="nm">${p.name}</div>`;
+    el.innerHTML = `<div class="av">${esc(p.avatar)}</div><div class="nm">${esc(p.name)}</div>`;
     el.onclick = () => enter(p);
     grid.appendChild(el);
   });
