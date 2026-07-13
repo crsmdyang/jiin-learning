@@ -917,8 +917,8 @@ function renderParent(){
     return h + '</select>'; };
   document.getElementById('p-body').innerHTML = `
     <div class="p-sec"><h3>🎯 학습 유닛 선택</h3>
-      <div class="p-row"><label><input type="radio" name="cfg-upick" value="0" ${!c.unitPick ? 'checked' : ''}> <b>자동 진행</b> — 오늘의 유닛을 완료하면 <b>다음 날</b> 다음 유닛으로 넘어가요 (하루 1유닛, 완료 못 하면 그 유닛 유지)</label></div>
-      <div class="p-row"><label><input type="radio" name="cfg-upick" value="1" ${c.unitPick ? 'checked' : ''}> <b>직접 선택</b> —</label> ${selN('cfg-upicksel',1,30,c.unitPick || todayUnit())} 유닛에 <b>계속 머물러요</b> (자동 진행 멈춤)</div>
+      <div class="p-row"><label><input type="radio" name="cfg-upick" value="0" ${!c.unitPick ? 'checked' : ''} onchange="setUnitMode(0)"> <b>자동 진행</b> — 오늘의 유닛을 완료하면 <b>다음 날</b> 다음 유닛으로 넘어가요 (하루 1유닛, 완료 못 하면 그 유닛 유지)</label></div>
+      <div class="p-row"><label><input type="radio" name="cfg-upick" value="1" ${c.unitPick ? 'checked' : ''} onchange="setUnitMode(+document.getElementById('cfg-upicksel').value)"> <b>직접 선택</b> —</label> <select id="cfg-upicksel" onchange="setUnitMode(+this.value)">${(() => { let h=''; const cur = c.unitPick || todayUnit(); for (let v=1; v<=30; v++) h += `<option value="${v}" ${v==cur?'selected':''}>${v}</option>`; return h; })()}</select> 유닛으로 <b>바로 이동</b>해요 (자동 진행 멈춤)</div>
       <div class="p-row" style="font-size:2.6vmin;color:#a58bb8;">${c.unitPick
         ? `📌 지금 <b>Unit ${c.unitPick}</b>에 머무는 중이에요. 자동 진행은 멈춰 있고, "자동 진행"으로 바꾸면 이어서 진행돼요.`
         : `▶️ 자동 진행 중 — 오늘의 유닛: <b>Unit ${todayUnit()}</b>${advDoneToday() ? ' (완료 🎉)' : ''}`}</div>
@@ -978,6 +978,20 @@ function saveCfg(){
   S.cfg.testQ = +g('cfg-tq').value; S.cfg.testMin = +g('cfg-tm').value;
   S.cfg.introEach = g('cfg-intro').checked;
   save(); renderParent();
+}
+/* 관리자 유닛 선택: 고르는 즉시 그 유닛으로 이동 (0 = 자동 진행 복귀) */
+function setUnitMode(pick){
+  pick = Math.max(0, parseInt(pick, 10) || 0);
+  const prev = Math.max(0, parseInt(S.cfg.unitPick, 10) || 0);
+  if (pick !== prev){
+    const d = dayRec();
+    d.unit = 0; d.udone = {}; d.advDone = false; delete d.forced;
+  }
+  S.cfg.unitPick = (pick >= 1 && pick <= 30) ? pick : 0;
+  todayUnit();            // 오늘 기록에 즉시 반영
+  save();
+  renderParent();        // 설정 화면 안내문 갱신
+  renderHome();          // 홈 화면(모험 유닛)도 즉시 갱신
 }
 function exportSave(){
   const blob = new Blob([JSON.stringify(S)], {type:'application/json'});
