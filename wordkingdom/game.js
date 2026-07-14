@@ -120,6 +120,43 @@ function testOwed(){ return (S.miniSinceTest || 0) >= 3; }
 let AC = null;
 function ac(){ if (!AC) AC = new (window.AudioContext||window.webkitAudioContext)(); if (AC.state==='suspended') AC.resume(); return AC; }
 let curAudio = null;
+
+/* ---------- TTS(문장 읽기) — 안드로이드/삼성 크롬 대응 ----------
+   음성 목록은 비동기로 로드되고(처음엔 비어 있음), 명시적 영어 음성을
+   지정하지 않으면 문장이 조용히 안 읽히는 문제가 있어 견고하게 처리한다. */
+let _ttsVoices = [];
+function _loadVoices(){ try { const v = speechSynthesis.getVoices(); if (v && v.length) _ttsVoices = v; } catch(e){} }
+if (window.speechSynthesis){
+  _loadVoices();
+  try { speechSynthesis.addEventListener('voiceschanged', _loadVoices); }
+  catch(e){ try { speechSynthesis.onvoiceschanged = _loadVoices; } catch(e2){} }
+}
+function _pickEnVoice(){
+  return _ttsVoices.find(v => /en[-_]?US/i.test(v.lang))
+      || _ttsVoices.find(v => /^en/i.test(v.lang))
+      || _ttsVoices.find(v => /en/i.test(v.lang)) || null;
+}
+function _speak(txt, rate){
+  if (!txt || !window.speechSynthesis) return;
+  try { if (curAudio) curAudio.pause(); } catch(e){}
+  if (!_ttsVoices.length) _loadVoices();
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(String(txt));
+    u.lang = 'en-US'; u.rate = rate || .85; u.pitch = 1;
+    const v = _pickEnVoice(); if (v) u.voice = v;
+    speechSynthesis.speak(u);
+    // 크롬/안드로이드: speak 직후 멈춰(paused) 있는 버그 방지용 nudge
+    setTimeout(() => { try { if (speechSynthesis.paused) speechSynthesis.resume(); } catch(e){} }, 120);
+    // 음성이 아직 로드 안 됐던 경우: 로드되면 1회 재시도
+    if (!v){
+      const retry = () => { _loadVoices(); const vv = _pickEnVoice();
+        if (vv){ try { speechSynthesis.cancel(); const u2 = new SpeechSynthesisUtterance(String(txt));
+          u2.lang='en-US'; u2.rate = rate || .85; u2.voice = vv; speechSynthesis.speak(u2); } catch(e){} } };
+      try { speechSynthesis.addEventListener('voiceschanged', retry, { once:true }); } catch(e){}
+    }
+  } catch(e){}
+}
 function playWord(k){
   const b64 = (window.WK_AUDIO || {})[k];
   if (b64) {
@@ -129,17 +166,9 @@ function playWord(k){
       return; } catch(e){}
   }
   const w = BYKEY[k];
-  if (w && window.speechSynthesis) {
-    const u = new SpeechSynthesisUtterance(w.w); u.lang = 'en-US'; u.rate = .85;
-    speechSynthesis.cancel(); speechSynthesis.speak(u);
-  }
+  if (w) _speak(w.w, .85);
 }
-function speakEn(txt){
-  if (!txt || !window.speechSynthesis) return;
-  try { if (curAudio) curAudio.pause(); } catch(e){}
-  const u = new SpeechSynthesisUtterance(txt); u.lang = 'en-US'; u.rate = .8;
-  speechSynthesis.cancel(); speechSynthesis.speak(u);
-}
+function speakEn(txt){ _speak(txt, .82); }
 function tone(freq, t0, dur, type, vol){
   const c = ac(), o = c.createOscillator(), g = c.createGain();
   o.type = type||'sine'; o.frequency.value = freq;
