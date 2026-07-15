@@ -53,16 +53,77 @@ function defState(){ return {
   cfg: { uFrom:1, uTo:30, dailyNew:6, qPer:12, introEach:true, order:'seq', reviewN:3, testQ:30, testMin:20, unitPick:0 },
 }; }
 function load(){ try { S = JSON.parse(localStorage.getItem(SKEY)) || defState(); } catch(e){ S = defState(); }
-  const d = defState();
-  S.cfg = Object.assign(d.cfg, S.cfg || {});
-  S.stickers = S.stickers || {}; S.mini = Object.assign(d.mini, S.mini || {});
-  S.miniSinceTest = Math.max(0, parseInt(S.miniSinceTest, 10) || 0); }
+  _bootTs = S._ts || 0;   // 이후 save()가 _ts를 갱신하기 전에 원래 저장 시각을 보관
+  normalizeState(S);
+  _lastBody = JSON.stringify(S, (k, v) => k === '_ts' ? undefined : v); }
 let _syncShown = null, _pendingSave = false, _cloudReady = false;
+let _bootTs = 0; // 페이지를 연 시점의 "진짜" 마지막 저장 시각 (renderHome의 save()가 _ts를 덮기 전 값)
 function hasProgress(st){
-  return !!(st && (Object.keys(st.words || {}).length || st.sessions || st.stars || Object.keys(st.stickers || {}).length));
+  // 주의: 단어 키 개수로 판단하면 안 됨 — 부팅 시 wRec()가 모든 단어에 빈 기록을 만들어
+  // "항상 기록 있음"으로 판정되던 버그가 있었다. 실제 학습 흔적만 센다.
+  if (!st) return false;
+  if (st.sessions || st.stars || Object.keys(st.stickers || {}).length) return true;
+  const ws = st.words || {};
+  for (const k in ws){ const w = ws[k]; if (w && ((w.seen||0) || (w.ok||0) || (w.ng||0) || (w.lv||0))) return true; }
+  return false;
 }
+/* 상태 정규화: 기본값 채우기 (load/클라우드 적용 공용) */
+function normalizeState(st){
+  const d = defState();
+  st.cfg = Object.assign(d.cfg, st.cfg || {});
+  st.stickers = st.stickers || {}; st.mini = Object.assign(d.mini, st.mini || {});
+  st.miniSinceTest = Math.max(0, parseInt(st.miniSinceTest, 10) || 0);
+  st.words = st.words || {}; st.days = st.days || {};
+  return st;
+}
+/* ---------- 기기 간 기록 병합 ----------
+   시각 비교(LWW)는 "게임을 열기만 해도 _ts가 갱신"되는 문제와 기기 시계 오차에 취약해서,
+   두 기록을 합집합/최댓값으로 병합한다. 어느 기기의 기록도 잃지 않는다. */
+function mergeStates(a, b){
+  const m = normalizeState(JSON.parse(JSON.stringify(a)));
+  b = normalizeState(JSON.parse(JSON.stringify(b)));
+  const newer = (b._ts || 0) > (a._ts || 0) ? b : m; // cfg 등 "설정성" 값은 더 최근 기록을 따름
+  m.stars = Math.max(m.stars || 0, b.stars || 0);
+  m.sessions = Math.max(m.sessions || 0, b.sessions || 0);
+  // 단어: 더 많이 학습(seen)한 쪽을 통째로, 같으면 항목별 최댓값
+  Object.keys(b.words).forEach(k => {
+    const bw = b.words[k], aw = m.words[k];
+    if (!aw){ m.words[k] = bw; return; }
+    if ((bw.seen || 0) > (aw.seen || 0)) m.words[k] = bw;
+    else if ((bw.seen || 0) === (aw.seen || 0))
+      m.words[k] = { lv: Math.max(aw.lv||0, bw.lv||0), ok: Math.max(aw.ok||0, bw.ok||0),
+                     ng: Math.max(aw.ng||0, bw.ng||0), seen: aw.seen || 0 };
+  });
+  // 날짜별 기록: 문제를 더 많이 푼 쪽 기준 + 완료 플래그는 OR
+  Object.keys(b.days).forEach(t => {
+    const bd = b.days[t], ad = m.days[t];
+    if (!ad){ m.days[t] = bd; return; }
+    const base = (bd.q || 0) > (ad.q || 0) ? bd : ad, other = base === bd ? ad : bd;
+    if (base.unit && other.unit && base.unit === other.unit && base.udone && other.udone)
+      base.udone = Object.assign({}, other.udone, base.udone);
+    base.advDone = !!(base.advDone || other.advDone);
+    base.stars = Math.max(base.stars || 0, other.stars || 0);
+    base.ok = Math.max(base.ok || 0, other.ok || 0);
+    m.days[t] = base;
+  });
+  // 스티커/미니게임 최고점: 최댓값
+  Object.keys(b.stickers).forEach(k => { m.stickers[k] = Math.max(m.stickers[k] || 0, b.stickers[k] || 0); });
+  ['bal','mem','spd'].forEach(k => { m.mini[k] = Math.max(m.mini[k] || 0, b.mini[k] || 0); });
+  // 유닛 진도: 더 앞선 쪽
+  const ap = a.prog, bp = b.prog;
+  if (bp && (!ap || (bp.unit || 0) > (ap.unit || 0))) m.prog = bp;
+  else if (ap && bp && (bp.unit || 0) === (ap.unit || 0) && String(bp.doneDate||'') > String(ap.doneDate||'')) m.prog = bp;
+  // 설정·퀘스트·기타는 더 최근 기록을 따름
+  m.cfg = newer.cfg; m.quest = newer.quest; m.miniSinceTest = newer.miniSinceTest;
+  m.helpSeen = a.helpSeen || b.helpSeen;
+  m.resetAt = Math.max(a.resetAt || 0, b.resetAt || 0);
+  return m;
+}
+let _lastBody = null;
 function save(){
-  S._ts = Date.now();
+  // 내용이 실제로 바뀐 경우에만 _ts 갱신 (열기만 해도 "최신"이 되어 버리는 문제 방지)
+  const body = JSON.stringify(S, (k, v) => k === '_ts' ? undefined : v);
+  if (body !== _lastBody){ _lastBody = body; S._ts = Date.now(); }
   try { localStorage.setItem(SKEY, JSON.stringify(S)); } catch(e){}
   if (window.Cloud && Cloud.enabled && !PROFILE.guest){
     if (Cloud.user && _cloudReady){
@@ -1034,13 +1095,14 @@ function importSave(inp){
   const rd = new FileReader();
   rd.onload = () => { try {
       const d = JSON.parse(rd.result);
-      if (d && d.cfg && d.words !== undefined){ S = d; save(); renderParent(); renderHome(); }
+      if (d && d.cfg && d.words !== undefined){ S = normalizeState(d); S.resetAt = Date.now(); save(); renderParent(); renderHome(); }
     } catch(e){ alert('백업 파일을 읽을 수 없어요.'); } };
   rd.readAsText(f);
 }
 function resetAll(){
   askModal('정말 모든 기록을 지울까요?\n(별, 친구, 진도가 사라져요)', () => {
-    S = defState(); save(); renderParent(); renderHome();
+    S = defState(); S.resetAt = Date.now(); // 다른 기기가 옛 기록을 되살리지 않도록 표시
+    save(); renderParent(); renderHome();
   });
 }
 
@@ -1326,30 +1388,45 @@ if (!S.helpSeen) setTimeout(openHelp, 700);
     if (!u || u.uid !== PROFILE.uid) return;
     try {
       const c = await Cloud.loadProgress(PROFILE.pid, 'wordKingdom');
-      const localEmpty = !hasProgress(S);
-      // 이 기기의 기록이 비어 있으면 시간과 상관없이 무조건 클라우드 기록을 가져온다
-      // (새 기기에서 첫 화면 저장이 클라우드 기록을 덮어쓰던 버그 수정)
-      if (c && c.state && hasProgress(c.state) && (localEmpty || (c.updatedAt || 0) > (S._ts || 0))){
-        S = c.state;
-        const d = defState();
-        S.cfg = Object.assign(d.cfg, S.cfg || {});
-        S.stickers = S.stickers || {}; S.mini = Object.assign(d.mini, S.mini || {});
-        S.miniSinceTest = Math.max(0, parseInt(S.miniSinceTest, 10) || 0);
+      const cs = c && c.state ? normalizeState(c.state) : null;
+      const adopt = (st) => {   // 클라우드/병합 결과를 이 기기에 적용
+        S = normalizeState(st);
+        _lastBody = JSON.stringify(S, (k, v) => k === '_ts' ? undefined : v); // 적용만으로는 "변경"으로 치지 않음
         try { localStorage.setItem(SKEY, JSON.stringify(S)); } catch(e){}
         _pendingSave = false;
-        _cloudReady = true;
         renderHome();
+      };
+      const cReset = cs && cs.resetAt || 0, lReset = S.resetAt || 0;
+      if (cs && cReset > lReset && cReset > _bootTs){
+        // 다른 기기에서 "기록 초기화"를 한 경우: 초기화를 그대로 반영
+        _cloudReady = true;
+        adopt(cs);
+      } else if (cs && lReset > cReset && lReset > (c.updatedAt || 0)){
+        // 이 기기에서 초기화한 뒤 아직 클라우드에 반영 전: 초기화를 업로드
+        _cloudReady = true;
+        Cloud.saveProgressNow(PROFILE.pid, 'wordKingdom', S);
+      } else if (cs && hasProgress(cs)){
+        _cloudReady = true;
+        if (!hasProgress(S)){
+          // 이 기기가 비어 있으면 클라우드 기록을 그대로 가져온다
+          adopt(cs);
+        } else {
+          // ★ 두 기기 모두 기록이 있으면 시각 비교 대신 병합한다.
+          //   (renderHome()의 save()가 클라우드 확인 전에 _ts를 갱신해 버려서
+          //    "로컬이 항상 더 최신"으로 판정 → 클라우드 기록이 안 보이던 버그 수정)
+          const before = JSON.stringify(S);
+          adopt(mergeStates(S, cs));
+          Cloud.saveProgressNow(PROFILE.pid, 'wordKingdom', S); // 병합 결과를 클라우드에도 반영
+          if (before !== JSON.stringify(S)) console.log('[sync] 다른 기기 기록과 병합했어요');
+        }
       } else {
         _cloudReady = true;
         // 클라우드가 비어 있는데 이 기기에 게스트(로그인 전) 기록이 있으면 가져오기 제안
-        if ((!c || !hasProgress(c && c.state)) && localEmpty){
+        if (!hasProgress(S)){
           const g = findGuestSave();
           if (g){
             askModal('이 기기에 로그인 전(게스트) 학습 기록이 있어요!\n⭐' + (g.data.stars||0) + ' · 모험 ' + (g.data.sessions||0) + '회\n이 프로필로 가져올까요?', () => {
-              S = g.data;
-              const d = defState();
-              S.cfg = Object.assign(d.cfg, S.cfg || {});
-              S.stickers = S.stickers || {}; S.mini = Object.assign(d.mini, S.mini || {});
+              S = normalizeState(g.data);
               save(); renderHome();
             });
           }
